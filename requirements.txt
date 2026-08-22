@@ -1,0 +1,8 @@
+opencv-python-headless==4.9.0.80
+numpy==1.26.4
+Pillow==10.3.0
+imagehash==4.3.1
+# ultralytics depends on torchvision; let Dockerfile install the matching
+# torch+torchvision pair from the CPU wheel index. Don't pin torchvision here
+# to avoid pip pulling a mismatched PyPI version.
+ultralytics==8.2.79

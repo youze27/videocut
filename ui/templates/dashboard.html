@@ -1,0 +1,840 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NAS 智慧家视觉检测事件监控大屏</title>
+<style>
+  :root{
+    --bg:#121418; --card:#1E2229; --fg:#e6e6e6; --muted:#9aa0aa;
+    --line:#2a2f3a;
+    /* object labels */
+    --obj-person:#D32F2F; --obj-cat:#F57C00; --obj-dog:#0277BD;
+    /* pose labels */
+    --pose-fall:#C62828; --pose-stand:#2E7D32; --pose-sit:#0097A7;
+    --pose-squat:#FBC02D; --pose-unknown:#757575; --pose-none:#424242;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;background:var(--bg);color:var(--fg);
+    font-family:system-ui,"Segoe UI",Roboto,Arial,"PingFang SC","Microsoft YaHei",sans-serif;}
+  a{color:#4f8cff;}
+
+  /* ---------- top bar ---------- */
+  header{display:flex;flex-wrap:wrap;align-items:center;gap:14px;
+    padding:12px 18px;background:var(--card);border-bottom:1px solid var(--line);}
+  header h1{font-size:18px;margin:0;white-space:nowrap;}
+  .stats{display:flex;gap:10px;flex-wrap:wrap;}
+  .stat{background:#0f1115;border:1px solid var(--line);border-radius:8px;
+    padding:6px 10px;font-size:12px;color:var(--muted);}
+  .stat b{color:var(--fg);font-size:15px;margin-right:4px;}
+  .clock{margin-left:auto;font-variant-numeric:tabular-nums;font-size:14px;color:var(--muted);}
+  .actions{display:flex;gap:8px;flex-wrap:wrap;}
+  button{cursor:pointer;border:none;border-radius:6px;padding:8px 12px;
+    font-size:13px;font-weight:600;background:#2a2f3a;color:var(--fg);}
+  button.primary{background:#4f8cff;color:#fff;}
+  .toggle.on{background:#3ecf8e;color:#04210f;}
+
+  /* ---------- filter bar ---------- */
+  .filters{display:flex;flex-wrap:wrap;gap:10px;padding:12px 18px;
+    background:#171a20;border-bottom:1px solid var(--line);}
+  .group{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+  .group .lbl{font-size:12px;color:var(--muted);}
+  .chip{border:1px solid var(--line);background:#0f1115;color:var(--fg);
+    border-radius:14px;padding:5px 11px;font-size:12px;cursor:pointer;}
+  .chip.active{background:#4f8cff;color:#fff;border-color:#4f8cff;}
+  .filters input[type=text]{background:#0f1115;border:1px solid var(--line);
+    color:var(--fg);border-radius:6px;padding:7px 10px;font-size:13px;min-width:160px;}
+
+  /* ---------- 照片墙卡片 ---------- */
+  main{padding:16px 18px;}
+  .grid{display:grid;gap:6px;}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:6px;
+    overflow:hidden;cursor:pointer;transition:transform .12s ease;}
+  .card:hover{transform:scale(1.03);}
+  .thumb{position:relative;aspect-ratio:3/2;background:#000;
+    container-type:inline-size;}
+  .thumb img{width:100%;height:100%;object-fit:cover;display:block;}
+  /* 水印标签：对象+姿态，左下角，带半透明背景，随图片大小缩放 */
+  .wm-tags{position:absolute;left:0;bottom:0;display:flex;gap:3px;
+    padding:3px 4px;}
+  .wm-tags .tag{font-size:clamp(7px,2.2cqi,12px);font-weight:600;
+    padding:1px clamp(3px,1cqi,7px);border-radius:3px;color:#fff;
+    background:rgba(0,0,0,.55);backdrop-filter:blur(2px);}
+  .wm-tags .tag.obj-person{background:rgba(211,47,47,.82);}
+  .wm-tags .tag.obj-cat{background:rgba(245,124,0,.82);}
+  .wm-tags .tag.obj-dog{background:rgba(2,119,189,.82);}
+  .wm-tags .tag.obj-unknown{background:rgba(117,117,117,.82);}
+  .wm-tags .tag.pose-fall{background:rgba(198,40,40,.82);}
+  .wm-tags .tag.pose-stand{background:rgba(46,125,50,.82);}
+  .wm-tags .tag.pose-sit{background:rgba(0,151,167,.82);}
+  .wm-tags .tag.pose-squat{background:rgba(251,192,45,.85);color:#000;}
+  .wm-tags .tag.pose-unknown{background:rgba(117,117,117,.82);}
+  .wm-tags .tag.pose-none{background:rgba(66,66,66,.82);}
+  /* 日期：右上角，带背景 */
+  .wm-date{position:absolute;right:0;top:0;font-size:clamp(7px,1.8cqi,11px);
+    color:#fff;background:rgba(0,0,0,.55);backdrop-filter:blur(2px);
+    padding:2px clamp(4px,1.2cqi,8px);border-radius:0 6px 0 5px;}
+  .play{position:absolute;right:6px;bottom:6px;width:clamp(20px,6cqi,34px);
+    height:clamp(20px,6cqi,34px);border-radius:50%;
+    background:rgba(0,0,0,.55);color:#fff;
+    font-size:clamp(9px,2.5cqi,15px);
+    display:flex;align-items:center;justify-content:center;}
+
+  .more{display:block;margin:20px auto;padding:10px 22px;}
+  .empty{text-align:center;color:var(--muted);padding:60px 20px;font-size:14px;}
+
+  /* ---------- 展示模式切换 ---------- */
+  .mode-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+  .mode-bar .lbl{font-size:12px;color:var(--muted);}
+  .mode-bar select{background:#0f1115;border:1px solid var(--line);color:var(--fg);
+    border-radius:6px;padding:6px 8px;font-size:12px;}
+
+  /* ---------- 网格模式（可配置列数） ---------- */
+  .grid{display:grid;gap:14px;}
+
+  /* ---------- 时间线模式（照片墙分组） ---------- */
+  .timeline{display:flex;flex-direction:column;gap:16px;}
+  .tl-day{}
+  .tl-day-head{font-size:13px;font-weight:600;color:#4f8cff;
+    padding:6px 10px;background:rgba(79,140,255,.12);border-radius:6px;
+    margin-bottom:6px;display:flex;align-items:center;gap:8px;}
+  .tl-day-head .tl-count{font-size:11px;color:var(--muted);font-weight:400;}
+  .tl-day-grid{display:grid;gap:6px;}
+
+  /* ---------- 轮播模式 ---------- */
+  .slideshow{position:fixed;inset:0;background:#000;z-index:40;
+    display:none;flex-direction:column;}
+  .slideshow.active{display:flex;}
+  .ss-bar{display:flex;align-items:center;gap:12px;padding:8px 16px;
+    background:rgba(20,22,28,.95);border-bottom:1px solid var(--line);
+    flex-wrap:wrap;}
+  .ss-bar .lbl{font-size:12px;color:var(--muted);}
+  .ss-bar select{background:#0f1115;border:1px solid var(--line);color:var(--fg);
+    border-radius:6px;padding:5px 8px;font-size:12px;}
+  .ss-bar button{padding:6px 12px;font-size:12px;}
+  /* 关键：stage 无 padding 无 gap，cell 无圆角无间距，图片填满 */
+  .ss-stage{flex:1;display:grid;gap:0;padding:0;overflow:hidden;
+    background:#000;width:100%;height:100%;}
+  .ss-cell{position:relative;background:#000;overflow:hidden;
+    display:flex;align-items:center;justify-content:center;}
+  .ss-cell img{width:100%;height:100%;object-fit:cover;display:block;}
+  .ss-cell .ss-cap{position:absolute;left:0;bottom:0;right:0;
+    font-size:11px;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.9);
+    padding:4px 8px;background:linear-gradient(transparent,rgba(0,0,0,.7));
+    display:flex;gap:6px;align-items:center;flex-wrap:wrap;}
+  .ss-progress{height:3px;background:#1a1d24;position:relative;overflow:hidden;}
+  .ss-progress-bar{height:100%;background:var(--accent);width:0;
+    transition:width .1s linear;}
+
+  /* ---------- modal ---------- */
+  .modal{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;z-index:50;}
+  .modal.hidden{display:none;}
+  .modal-mask{position:absolute;inset:0;background:rgba(0,0,0,.72);}
+  .modal-box{position:relative;background:var(--card);border:1px solid var(--line);
+    border-radius:10px;max-width:85vw;width:900px;overflow:hidden;}
+  .modal-head{display:flex;align-items:center;justify-content:space-between;
+    padding:10px 14px;border-bottom:1px solid var(--line);font-size:14px;}
+  .modal-head .x{background:transparent;font-size:20px;line-height:1;padding:2px 8px;}
+  .modal-body{padding:12px;}
+  .modal-body video{max-width:100%;max-height:75vh;display:block;margin:0 auto;background:#000;}
+  .modal-body img{max-width:100%;max-height:75vh;display:block;margin:0 auto;}
+  .notice{text-align:center;color:#ffb74d;padding:14px;font-size:13px;}
+
+  @media (max-width:640px){
+    .grid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;}
+    .clock{width:100%;margin-left:0;}
+    .time{display:none;}
+    .time-short{display:inline;margin-left:auto;font-size:11px;color:var(--muted);}
+    .modal-box{width:94vw;}
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>🏠 NAS 智慧家视觉检测事件监控大屏</h1>
+  <div class="stats" id="stats">
+    <div class="stat"><b id="s-total">0</b>总事件</div>
+    <div class="stat"><b id="s-person">0</b>人物</div>
+    <div class="stat"><b id="s-cat">0</b>猫咪</div>
+    <div class="stat"><b id="s-dog">0</b>狗狗</div>
+  </div>
+  <div class="clock" id="clock">--:--:--</div>
+  <div class="actions">
+    <button class="primary" id="btn-refresh">手动刷新</button>
+    <button id="btn-clear">清空筛选</button>
+    <button class="toggle on" id="btn-auto">自动刷新: 30s</button>
+    <button id="btn-noobj">📹 无对象视频</button>
+    <button id="btn-config">⚙ 配置</button>
+  </div>
+</header>
+
+<div class="filters">
+  <div class="group"><span class="lbl">对象</span>
+    <span class="chip active" data-f="obj" data-v="all">全部</span>
+    <span class="chip" data-f="obj" data-v="person">人物</span>
+    <span class="chip" data-f="obj" data-v="cat">猫咪</span>
+    <span class="chip" data-f="obj" data-v="dog">狗狗</span>
+  </div>
+  <div class="group"><span class="lbl">姿态</span>
+    <span class="chip active" data-f="pose" data-v="all">全部姿态</span>
+    <span class="chip" data-f="pose" data-v="fall">摔倒</span>
+    <span class="chip" data-f="pose" data-v="stand">站立</span>
+    <span class="chip" data-f="pose" data-v="sit">坐下</span>
+    <span class="chip" data-f="pose" data-v="squat">蹲下</span>
+    <span class="chip" data-f="pose" data-v="unknown">无法判断</span>
+    <span class="chip" data-f="pose" data-v="none">无姿态</span>
+  </div>
+  <div class="group"><span class="lbl">时间</span>
+    <span class="chip active" data-f="time" data-v="all">全部</span>
+    <span class="chip" data-f="time" data-v="1">近1h</span>
+    <span class="chip" data-f="time" data-v="6">近6h</span>
+    <span class="chip" data-f="time" data-v="24">近24h</span>
+  </div>
+  <div class="group"><span class="lbl">搜索</span>
+    <input type="text" id="kw" placeholder="模糊匹配时间/类型">
+  </div>
+</div>
+
+<div class="filters mode-bar">
+  <span class="lbl">展示模式</span>
+  <select id="mode-select">
+    <option value="grid">网格</option>
+    <option value="timeline">时间线</option>
+    <option value="slideshow">轮播</option>
+  </select>
+  <span class="lbl" id="cols-lbl">列数</span>
+  <select id="cols-select">
+    <option value="2">2列</option>
+    <option value="3">3列</option>
+    <option value="4" selected>4列</option>
+    <option value="5">5列</option>
+    <option value="6">6列</option>
+    <option value="8">8列</option>
+  </select>
+  <span class="lbl" id="ss-lbl" style="display:none">轮播间隔</span>
+  <select id="ss-interval" style="display:none">
+    <option value="2">2秒</option>
+    <option value="3">3秒</option>
+    <option value="5" selected>5秒</option>
+    <option value="8">8秒</option>
+    <option value="10">10秒</option>
+    <option value="15">15秒</option>
+    <option value="30">30秒</option>
+  </select>
+  <span class="lbl" id="ss-grid-lbl" style="display:none">轮播布局</span>
+  <select id="ss-grid" style="display:none">
+    <option value="1x1" selected>1x1 (1张)</option>
+    <option value="1x2">1x2 (2张)</option>
+    <option value="1x3">1x3 (3张)</option>
+    <option value="2x2">2x2 (4张)</option>
+    <option value="2x3">2x3 (6张)</option>
+    <option value="3x3">3x3 (9张)</option>
+    <option value="3x4">3x4 (12张)</option>
+    <option value="4x4">4x4 (16张)</option>
+    <option value="4x5">4x5 (20张)</option>
+    <option value="5x5">5x5 (25张)</option>
+    <option value="5x6">5x6 (30张)</option>
+    <option value="6x6">6x6 (36张)</option>
+    <option value="6x8">6x8 (48张)</option>
+    <option value="8x8">8x8 (64张)</option>
+    <option value="8x10">8x10 (80张)</option>
+    <option value="10x10">10x10 (100张)</option>
+    <option value="10x12">10x12 (120张)</option>
+    <option value="12x12">12x12 (144张)</option>
+  </select>
+</div>
+
+<main>
+  <div class="grid" id="grid"></div>
+  <div class="timeline" id="timeline" style="display:none"></div>
+  <button class="more" id="more" style="display:none">加载更多</button>
+  <div class="empty" id="empty" style="display:none">暂无事件数据</div>
+</main>
+
+<!-- 轮播模式全屏覆盖层 -->
+<div class="slideshow" id="slideshow">
+  <div class="ss-bar">
+    <span class="lbl">轮播中</span>
+    <span id="ss-counter" style="font-size:12px;color:var(--muted);"></span>
+    <span class="lbl">间隔</span>
+    <select id="ss-interval-2">
+      <option value="2">2秒</option>
+      <option value="3">3秒</option>
+      <option value="5" selected>5秒</option>
+      <option value="8">8秒</option>
+      <option value="10">10秒</option>
+      <option value="15">15秒</option>
+      <option value="30">30秒</option>
+    </select>
+    <span class="lbl">布局</span>
+    <select id="ss-grid-2">
+      <option value="1x1" selected>1x1 (1张)</option>
+      <option value="1x2">1x2 (2张)</option>
+      <option value="1x3">1x3 (3张)</option>
+      <option value="2x2">2x2 (4张)</option>
+      <option value="2x3">2x3 (6张)</option>
+      <option value="3x3">3x3 (9张)</option>
+      <option value="3x4">3x4 (12张)</option>
+      <option value="4x4">4x4 (16张)</option>
+      <option value="4x5">4x5 (20张)</option>
+      <option value="5x5">5x5 (25张)</option>
+      <option value="5x6">5x6 (30张)</option>
+      <option value="6x6">6x6 (36张)</option>
+      <option value="6x8">6x8 (48张)</option>
+      <option value="8x8">8x8 (64张)</option>
+      <option value="8x10">8x10 (80张)</option>
+      <option value="10x10">10x10 (100张)</option>
+      <option value="10x12">10x12 (120张)</option>
+      <option value="12x12">12x12 (144张)</option>
+    </select>
+    <button id="ss-prev">◀ 上一组</button>
+    <button id="ss-pause">⏸ 暂停</button>
+    <button id="ss-next">下一组 ▶</button>
+    <button class="primary" id="ss-exit" style="margin-left:auto">退出轮播</button>
+  </div>
+  <div class="ss-stage" id="ss-stage"></div>
+  <div class="ss-progress"><div class="ss-progress-bar" id="ss-progress-bar"></div></div>
+</div>
+
+<div class="modal hidden" id="modal">
+  <div class="modal-mask" id="m-mask"></div>
+  <div class="modal-box">
+    <div class="modal-head"><span id="m-title"></span><button class="x" id="m-close">×</button></div>
+    <div class="modal-body" id="m-body"></div>
+  </div>
+</div>
+
+<!-- 无对象视频弹窗 -->
+<div class="modal hidden" id="noobj-modal">
+  <div class="modal-mask" id="noobj-mask"></div>
+  <div class="modal-box" style="width:1100px;max-width:95vw;">
+    <div class="modal-head">
+      <span>📹 无对象视频管理</span>
+      <button class="x" id="noobj-close">×</button>
+    </div>
+    <div class="modal-body" id="noobj-body" style="padding:16px;max-height:78vh;overflow:auto;">
+      <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap;">
+        <button class="ghost" id="noobj-refresh">刷新列表</button>
+        <button class="ghost" id="noobj-selectall">全选</button>
+        <button class="primary" id="noobj-delete" style="background:#e74c3c;">删除选中</button>
+        <span id="noobj-count" style="font-size:12px;color:var(--muted);"></span>
+      </div>
+      <div id="noobj-list"></div>
+    </div>
+  </div>
+</div>
+
+<!-- 视频播放弹窗 -->
+<div class="modal hidden" id="video-modal">
+  <div class="modal-mask" id="video-mask"></div>
+  <div class="modal-box" style="width:900px;max-width:95vw;">
+    <div class="modal-head"><span id="video-title">播放</span><button class="x" id="video-close">×</button></div>
+    <div class="modal-body" style="padding:0;background:#000;">
+      <video id="video-player" controls style="width:100%;max-height:78vh;display:block;"></video>
+    </div>
+  </div>
+</div>
+
+<div class="modal hidden" id="cfg-modal">
+  <div class="modal-mask" id="cfg-mask"></div>
+  <div class="modal-box" style="width:1100px;max-width:95vw;">
+    <div class="modal-head"><span>⚙ 配置 / 运行</span><button class="x" id="cfg-close">×</button></div>
+    <div class="modal-body" style="padding:0;">
+      <iframe id="cfg-frame" src="" style="width:100%;height:78vh;border:0;background:#0f1115;"></iframe>
+    </div>
+  </div>
+</div>
+
+<script>
+const OBJ = {
+  person:{t:"人物",c:"obj-person"}, cat:{t:"猫咪",c:"obj-cat"},
+  dog:{t:"狗狗",c:"obj-dog"}, unknown:{t:"未知",c:"obj-unknown"}
+};
+const POSE = {
+  fall:{t:"摔倒",c:"pose-fall"}, stand:{t:"站立",c:"pose-stand"},
+  sit:{t:"坐下",c:"pose-sit"}, squat:{t:"蹲下",c:"pose-squat"},
+  unknown:{t:"无法判断",c:"pose-unknown"}, none:{t:"无姿态",c:"pose-none"}
+};
+
+let ALL = [];          // current events from server
+let shown = 120;
+const filter = {obj:"all", pose:"all", time:"all", kw:""};
+let autoRefresh = true;
+let autoTimer = null;
+
+// 展示模式状态
+let viewMode = "grid";       // grid | timeline | slideshow
+let gridCols = 4;            // 网格列数
+let ssInterval = 5;          // 轮播间隔（秒）
+let ssGrid = "1x1";          // 轮播布局 "RxC"
+let ssIndex = 0;             // 轮播当前索引
+let ssPaused = false;
+let ssTimer = null;
+let ssProgressTimer = null;
+
+const $ = id => document.getElementById(id);
+
+// 解析 "RxC" -> {rows, cols, perPage}
+function parseGrid(g){
+  const [r, c] = g.split("x").map(Number);
+  return {rows: r, cols: c, perPage: r * c};
+}
+
+function tag(cls, text){ return `<span class="tag ${cls}">${text}</span>`; }
+
+function applyFilter(list){
+  const now = Math.floor(Date.now() / 1000);  // 当前 Unix 时间戳（秒）
+  const kw = filter.kw.trim().toLowerCase();
+  return list.filter(e=>{
+    if(filter.obj!=="all" && e.objType!==filter.obj) return false;
+    if(filter.pose!=="all" && e.poseType!==filter.pose) return false;
+    if(filter.time!=="all"){
+      // 用服务器返回的 ts（Unix 秒），避免时区偏差
+      const t = e.ts || 0;
+      if(!t || now - t > filter.time*3600) return false;
+    }
+    if(kw){
+      const hay = (e.timeFull+" "+e.objType+" "+e.poseType).toLowerCase();
+      if(!hay.includes(kw)) return false;
+    }
+    return true;
+  });
+}
+
+function cardHtml(e){
+  const o = OBJ[e.objType]||OBJ.unknown;
+  const p = POSE[e.poseType]||POSE.unknown;
+  const img = e.jpg ? `/snap/${e.jpg}` : "";
+  const hasSrc = e.sourceVideo ? "▶" : "";
+  return `<div class="card" data-jpg="${e.jpg||""}"
+               data-source="${e.sourceVideo||""}"
+               data-start="${e.startTime||0}"
+               data-time="${e.timeFull}" data-obj="${o.t}" data-pose="${p.t}">
+    <div class="thumb">
+      <img loading="lazy" src="${img}" alt="">
+      <div class="wm-date">${e.timeShort}</div>
+      <div class="wm-tags">${tag(o.c,o.t)} ${tag(p.c,p.t)}</div>
+      ${hasSrc?`<span class="play">${hasSrc}</span>`:``}
+    </div>
+  </div>`;
+}
+
+function renderGrid(filtered){
+  const grid = $("grid");
+  const slice = filtered.slice(0, shown);
+  grid.style.gridTemplateColumns = `repeat(${gridCols}, 1fr)`;
+  grid.innerHTML = slice.map(cardHtml).join("");
+  $("more").style.display = filtered.length>shown ? "block" : "none";
+}
+
+function renderTimeline(filtered){
+  const tl = $("timeline");
+  if(filtered.length === 0){ tl.innerHTML = ""; return; }
+
+  // 按日期分组，每组用照片墙网格展示
+  const groups = {};
+  filtered.forEach(e=>{
+    const day = e.timeFull.slice(0, 10);  // YYYY-MM-DD
+    if(!groups[day]) groups[day] = [];
+    groups[day].push(e);
+  });
+  const days = Object.keys(groups).sort().reverse();
+  tl.innerHTML = days.map(day=>{
+    const items = groups[day];
+    const cards = items.map(cardHtml).join("");
+    return `<div class="tl-day">
+      <div class="tl-day-head">📅 ${day} <span class="tl-count">${items.length} 个事件</span></div>
+      <div class="tl-day-grid" style="grid-template-columns:repeat(${gridCols},1fr);">${cards}</div>
+    </div>`;
+  }).join("");
+}
+
+function renderSlideshow(filtered){
+  if(filtered.length === 0){
+    $("ss-stage").innerHTML = '<div style="color:var(--muted);font-size:16px;">暂无事件</div>';
+    $("ss-counter").textContent = "";
+    return;
+  }
+  const g = parseGrid(ssGrid);
+  const perPage = g.perPage;
+  const pages = Math.ceil(filtered.length / perPage);
+  if(ssIndex >= pages) ssIndex = 0;
+  const start = ssIndex * perPage;
+  const slice = filtered.slice(start, start + perPage);
+
+  // 设置 stage 网格（行x列）
+  const stage = $("ss-stage");
+  stage.style.gridTemplateColumns = `repeat(${g.cols}, 1fr)`;
+  stage.style.gridTemplateRows = `repeat(${g.rows}, 1fr)`;
+  stage.innerHTML = slice.map(e=>{
+    const o = OBJ[e.objType]||OBJ.unknown;
+    const p = POSE[e.poseType]||POSE.unknown;
+    const img = e.jpg ? `/snap/${e.jpg}` : "";
+    return `<div class="ss-cell">
+      <img src="${img}" alt="">
+      <div class="ss-cap">${tag(o.c,o.t)} ${tag(p.c,p.t)} ${e.timeShort}</div>
+    </div>`;
+  }).join("");
+
+  $("ss-counter").textContent = `第 ${ssIndex+1}/${pages} 页（共 ${filtered.length} 个事件，每页 ${perPage} 张）`;
+}
+
+function render(){
+  const filtered = applyFilter(ALL);
+  $("empty").style.display = filtered.length===0 ? "block" : "none";
+
+  if(viewMode === "grid"){
+    $("grid").style.display = "grid";
+    $("timeline").style.display = "none";
+    $("more").style.display = "none";
+    renderGrid(filtered);
+  } else if(viewMode === "timeline"){
+    $("grid").style.display = "none";
+    $("timeline").style.display = "block";
+    $("more").style.display = "none";
+    renderTimeline(filtered);
+  } else if(viewMode === "slideshow"){
+    $("grid").style.display = "none";
+    $("timeline").style.display = "none";
+    $("more").style.display = "none";
+    $("slideshow").classList.add("active");
+    ssIndex = 0;
+    renderSlideshow(filtered);
+    startSlideshow();
+  }
+
+  // 轮播退出时隐藏覆盖层
+  if(viewMode !== "slideshow"){
+    $("slideshow").classList.remove("active");
+    stopSlideshow();
+  }
+}
+
+// ---------- 轮播控制 ----------
+function startSlideshow(){
+  stopSlideshow();
+  if(ssPaused) return;
+  let elapsed = 0;
+  const bar = $("ss-progress-bar");
+  bar.style.width = "0%";
+  ssProgressTimer = setInterval(()=>{
+    elapsed += 0.1;
+    const pct = (elapsed / ssInterval) * 100;
+    bar.style.width = Math.min(pct, 100) + "%";
+  }, 100);
+  ssTimer = setTimeout(()=>{
+    nextSlide();
+  }, ssInterval * 1000);
+}
+
+function stopSlideshow(){
+  if(ssTimer){ clearTimeout(ssTimer); ssTimer = null; }
+  if(ssProgressTimer){ clearInterval(ssProgressTimer); ssProgressTimer = null; }
+}
+
+function nextSlide(){
+  const filtered = applyFilter(ALL);
+  const g = parseGrid(ssGrid);
+  const pages = Math.ceil(filtered.length / g.perPage);
+  if(pages === 0) return;
+  ssIndex = (ssIndex + 1) % pages;
+  renderSlideshow(filtered);
+  startSlideshow();
+}
+
+function prevSlide(){
+  const filtered = applyFilter(ALL);
+  const g = parseGrid(ssGrid);
+  const pages = Math.ceil(filtered.length / g.perPage);
+  if(pages === 0) return;
+  ssIndex = (ssIndex - 1 + pages) % pages;
+  renderSlideshow(filtered);
+  startSlideshow();
+}
+
+function loadData(){
+  fetch("/api/events").then(r=>r.json()).then(j=>{
+    ALL = j.events||[];
+    const s = j.stats||{total:0,person:0,cat:0,dog:0};
+    $("s-total").textContent=s.total;
+    $("s-person").textContent=s.person;
+    $("s-cat").textContent=s.cat;
+    $("s-dog").textContent=s.dog;
+    render();
+  }).catch(()=>{});
+}
+
+// ---- filters ----
+document.querySelectorAll(".chip[data-f]").forEach(ch=>{
+  ch.addEventListener("click", ()=>{
+    const f = ch.dataset.f, v = ch.dataset.v;
+    document.querySelectorAll(`.chip[data-f="${f}"]`).forEach(x=>x.classList.remove("active"));
+    ch.classList.add("active");
+    filter[f] = v;
+    shown = 120;
+    render();
+  });
+});
+$("kw").addEventListener("input", e=>{ filter.kw=e.target.value; shown=120; render(); });
+
+$("more").addEventListener("click", ()=>{ shown+=120; render(); });
+$("btn-refresh").addEventListener("click", loadData);
+$("btn-clear").addEventListener("click", ()=>{
+  filter.obj="all"; filter.pose="all"; filter.time="all"; filter.kw="";
+  $("kw").value=""; shown=120;
+  document.querySelectorAll(".chip[data-f]").forEach(x=>{
+    x.classList.toggle("active", x.dataset.v==="all");
+  });
+  render();
+});
+$("btn-auto").addEventListener("click", ()=>{
+  autoRefresh=!autoRefresh;
+  const b=$("btn-auto");
+  b.classList.toggle("on",autoRefresh);
+  b.textContent = autoRefresh ? "自动刷新: 30s" : "自动刷新: 关闭";
+  if(autoRefresh){ autoTimer=setInterval(loadData,30000); }
+  else { clearInterval(autoTimer); autoTimer=null; }
+});
+
+// ---- 展示模式切换 ----
+function updateModeUI(){
+  const showCols = viewMode === "grid" || viewMode === "timeline";
+  const isSS = viewMode === "slideshow";
+  $("cols-lbl").style.display = showCols ? "" : "none";
+  $("cols-select").style.display = showCols ? "" : "none";
+  $("ss-lbl").style.display = isSS ? "" : "none";
+  $("ss-interval").style.display = isSS ? "" : "none";
+  $("ss-grid-lbl").style.display = isSS ? "" : "none";
+  $("ss-grid").style.display = isSS ? "" : "none";
+}
+$("mode-select").addEventListener("change", e=>{
+  viewMode = e.target.value;
+  updateModeUI();
+  render();
+});
+$("cols-select").addEventListener("change", e=>{
+  gridCols = parseInt(e.target.value);
+  render();
+});
+$("ss-interval").addEventListener("change", e=>{
+  ssInterval = parseInt(e.target.value);
+  $("ss-interval-2").value = e.target.value;
+  startSlideshow();
+});
+$("ss-grid").addEventListener("change", e=>{
+  ssGrid = e.target.value;
+  $("ss-grid-2").value = e.target.value;
+  ssIndex = 0;
+  render();
+});
+// 轮播控制栏
+$("ss-interval-2").addEventListener("change", e=>{
+  ssInterval = parseInt(e.target.value);
+  $("ss-interval").value = e.target.value;
+  startSlideshow();
+});
+$("ss-grid-2").addEventListener("change", e=>{
+  ssGrid = e.target.value;
+  $("ss-grid").value = e.target.value;
+  ssIndex = 0;
+  render();
+});
+$("ss-prev").addEventListener("click", prevSlide);
+$("ss-next").addEventListener("click", nextSlide);
+$("ss-pause").addEventListener("click", ()=>{
+  ssPaused = !ssPaused;
+  $("ss-pause").textContent = ssPaused ? "▶ 继续" : "⏸ 暂停";
+  if(ssPaused) stopSlideshow();
+  else startSlideshow();
+});
+$("ss-exit").addEventListener("click", ()=>{
+  viewMode = "grid";
+  $("mode-select").value = "grid";
+  updateModeUI();
+  render();
+});
+
+// ---- modal ----
+function openModal(card){
+  const jpg = card.dataset.jpg;
+  const sourceVideo = card.dataset.source;
+  const startTime = parseFloat(card.dataset.start || 0);
+  const title = `${card.dataset.time} ｜【${card.dataset.obj}】【${card.dataset.pose}】`;
+  $("m-title").textContent = title;
+  const body = $("m-body");
+  if(sourceVideo){
+    // 直接用 HTML5 video 播放源视频，无需插件。监听 loadedmetadata 后定位到起始时间。
+    // 如果源视频不存在或不可访问（/source 返回 403/404），降级为显示 JPG 快照。
+    const url = `/source?path=${encodeURIComponent(sourceVideo)}`;
+    const fallbackHtml = jpg
+      ? `<img src="/snap/${jpg}"><div class="notice">⚠️ 源视频不可访问，仅展示抓拍图片</div>`
+      : `<div class="notice">⚠️ 源视频不可访问，且无快照图片</div>`;
+    body.innerHTML =
+      `<video controls autoplay preload="metadata" src="${url}"></video>` +
+      `<div class="notice">⏱ 已定位到源视频 ${startTime.toFixed(1)}s 处（原始素材，未裁剪）</div>`;
+    const v = body.querySelector("video");
+    v.addEventListener("loadedmetadata", () => {
+      try { v.currentTime = startTime; } catch(e) {}
+    });
+    // 视频加载失败时降级为图片
+    v.addEventListener("error", () => {
+      body.innerHTML = fallbackHtml;
+    });
+  }else if(jpg){
+    body.innerHTML = `<img src="/snap/${jpg}"><div class="notice">⚠️ 该事件未记录源视频信息，仅展示抓拍图片</div>`;
+  }else{
+    body.innerHTML = `<div class="notice">无可用素材</div>`;
+  }
+  $("modal").classList.remove("hidden");
+}
+function closeModal(){
+  const body=$("m-body");
+  body.innerHTML=""; // release video/src to avoid memory leak
+  $("modal").classList.add("hidden");
+}
+$("grid").addEventListener("click", e=>{
+  const card=e.target.closest(".card"); if(card) openModal(card);
+});
+$("timeline").addEventListener("click", e=>{
+  const card=e.target.closest(".card"); if(card) openModal(card);
+});
+$("m-close").addEventListener("click", closeModal);
+$("m-mask").addEventListener("click", closeModal);
+
+// ---- config modal (loads the control panel via iframe) ----
+function openConfig(){
+  $("cfg-frame").src = "/config";
+  $("cfg-modal").classList.remove("hidden");
+}
+function closeConfig(){
+  $("cfg-frame").src = "";   // release the iframe
+  $("cfg-modal").classList.add("hidden");
+}
+$("btn-config").addEventListener("click", openConfig);
+$("cfg-close").addEventListener("click", closeConfig);
+$("cfg-mask").addEventListener("click", closeConfig);
+
+// ---- 无对象视频管理 ----
+let _noobjVideos = [];
+let _noobjSelected = new Set();
+
+function openNoObj(){
+  $("noobj-modal").classList.remove("hidden");
+  loadNoObj();
+}
+function closeNoObj(){
+  $("noobj-modal").classList.add("hidden");
+}
+$("btn-noobj").addEventListener("click", openNoObj);
+$("noobj-close").addEventListener("click", closeNoObj);
+$("noobj-mask").addEventListener("click", closeNoObj);
+$("noobj-refresh").addEventListener("click", loadNoObj);
+
+$("noobj-selectall").addEventListener("click", ()=>{
+  const allSelected = _noobjVideos.length > 0 && _noobjVideos.every(v=>_noobjSelected.has(v.path));
+  _noobjSelected.clear();
+  if(!allSelected){
+    _noobjVideos.forEach(v=>_noobjSelected.add(v.path));
+  }
+  renderNoObj();
+});
+
+$("noobj-delete").addEventListener("click", ()=>{
+  if(_noobjSelected.size === 0){ alert("请先选择视频"); return; }
+  if(!confirm(`确认删除 ${_noobjSelected.size} 个视频文件？此操作不可恢复。`)) return;
+  fetch("/api/no_object_videos", {
+    method: "DELETE",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({paths: Array.from(_noobjSelected)})
+  }).then(r=>r.json()).then(j=>{
+    alert(j.message || "删除完成");
+    _noobjSelected.clear();
+    loadNoObj();
+  }).catch(()=>alert("删除失败"));
+});
+
+function loadNoObj(){
+  fetch("/api/no_object_videos").then(r=>r.json()).then(j=>{
+    _noobjVideos = j.videos || [];
+    renderNoObj();
+  }).catch(()=>{
+    $("noobj-list").innerHTML = '<div style="color:var(--muted);text-align:center;padding:40px;">加载失败</div>';
+  });
+}
+
+function renderNoObj(){
+  const list = $("noobj-list");
+  $("noobj-count").textContent = `共 ${_noobjVideos.length} 个无对象视频`;
+  if(_noobjVideos.length === 0){
+    list.innerHTML = '<div style="color:var(--muted);text-align:center;padding:40px;">暂无无对象视频</div>';
+    return;
+  }
+  list.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:13px;">
+    <thead><tr style="text-align:left;color:var(--muted);border-bottom:1px solid var(--line);">
+      <th style="padding:8px;width:30px;"><input type="checkbox" id="noobj-checkall" ${_noobjVideos.every(v=>_noobjSelected.has(v.path))?'checked':''}></th>
+      <th style="padding:8px;">文件名</th>
+      <th style="padding:8px;">大小</th>
+      <th style="padding:8px;">时长</th>
+      <th style="padding:8px;">日期</th>
+      <th style="padding:8px;">操作</th>
+    </tr></thead>
+    <tbody>
+    ${_noobjVideos.map(v=>{
+      const checked = _noobjSelected.has(v.path) ? 'checked' : '';
+      return `<tr style="border-bottom:1px solid var(--line);" data-path="${v.path}">
+        <td style="padding:8px;"><input type="checkbox" class="noobj-check" data-path="${v.path}" ${checked}></td>
+        <td style="padding:8px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${v.name}">${v.name}</td>
+        <td style="padding:8px;color:var(--muted);">${v.size_mb||'-'}</td>
+        <td style="padding:8px;color:var(--muted);">${v.duration||'-'}</td>
+        <td style="padding:8px;color:var(--muted);">${v.date||'-'}</td>
+        <td style="padding:8px;">
+          <button class="ghost" style="padding:4px 8px;font-size:12px;" onclick="playVideo('${v.path}','${v.name}')">▶ 播放</button>
+        </td>
+      </tr>`;
+    }).join("")}
+    </tbody></table>`;
+  // checkbox 事件
+  document.querySelectorAll(".noobj-check").forEach(cb=>{
+    cb.addEventListener("change", e=>{
+      if(e.target.checked) _noobjSelected.add(e.target.dataset.path);
+      else _noobjSelected.delete(e.target.dataset.path);
+    });
+  });
+  const cba = $("noobj-checkall");
+  if(cba) cba.addEventListener("change", e=>{
+    if(e.target.checked) _noobjVideos.forEach(v=>_noobjSelected.add(v.path));
+    else _noobjSelected.clear();
+    renderNoObj();
+  });
+}
+
+// ---- 视频播放 ----
+function playVideo(path, name){
+  $("video-title").textContent = name || "播放";
+  $("video-player").src = `/api/video?path=${encodeURIComponent(path)}`;
+  $("video-modal").classList.remove("hidden");
+}
+$("video-close").addEventListener("click", ()=>{
+  $("video-modal").classList.add("hidden");
+  $("video-player").pause();
+  $("video-player").src = "";
+});
+$("video-mask").addEventListener("click", ()=>{
+  $("video-modal").classList.add("hidden");
+  $("video-player").pause();
+  $("video-player").src = "";
+});
+
+// ---- clock ----
+function tick(){
+  const d=new Date();
+  const p=n=>String(n).padStart(2,"0");
+  $("clock").textContent=`${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+tick(); setInterval(tick,1000);
+
+loadData();
+autoTimer=setInterval(loadData,30000);
+</script>
+</body>
+</html>

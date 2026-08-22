@@ -1,0 +1,21 @@
+services:
+  videocut:
+    build: .
+    # Keep alive to serve the web UI and run the daily scheduler.
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    # Mount the NAS video folder. Inside the container it appears as /host,
+    # so in the UI set input = /host and output = /host/output (subfolder).
+    # Adjust the left side to your real path if different.
+    volumes:
+      - /vol2/1000/video_back:/host
+      - /vol2/1000/video_back/.videocut_work:/work
+      # Mount local source so fixes (e.g. the stitch.py / config bugs) take
+      # effect without rebuilding the image. Remove these two lines if you
+      # prefer the image-baked code (then `docker compose build` instead).
+      - ./src:/app/src
+      - ./ui:/app/ui
+    environment:
+      TZ: Asia/Shanghai
+      WORK_DIR: /work

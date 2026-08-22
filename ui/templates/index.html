@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>videocut</title>
+<style>
+  :root { --bg:#0f1115; --card:#1a1d24; --fg:#e6e6e6; --muted:#9aa0aa;
+          --accent:#4f8cff; --ok:#3ecf8e; --bad:#ff6b6b; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;
+         background:var(--bg); color:var(--fg); }
+  header { padding:14px 20px; background:var(--card); display:flex;
+           align-items:center; gap:12px; }
+  header h1 { font-size:18px; margin:0; }
+  .badge { font-size:12px; padding:3px 8px; border-radius:10px;
+           background:#2a2f3a; color:var(--muted); }
+  .badge.run { background:rgba(79,140,255,.2); color:var(--accent); }
+  main { padding:20px; display:grid; grid-template-columns:360px 1fr;
+         gap:20px; }
+  .card { background:var(--card); border-radius:10px; padding:16px; }
+  label { display:block; font-size:12px; color:var(--muted); margin:10px 0 4px; }
+  input, select { width:100%; padding:8px; border-radius:6px; border:1px solid #2a2f3a;
+                  background:#0f1115; color:var(--fg); font-size:13px; }
+  .row { display:flex; gap:8px; }
+  .row > * { flex:1; }
+  button { cursor:pointer; border:none; border-radius:6px; padding:9px 12px;
+           font-size:13px; font-weight:600; }
+  .primary { background:var(--accent); color:#fff; }
+  .ghost { background:#2a2f3a; color:var(--fg); }
+  .section-title { font-size:13px; text-transform:uppercase; letter-spacing:.06em;
+                   color:var(--muted); margin:0 0 10px; }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  th, td { text-align:left; padding:7px 8px; border-bottom:1px solid #232733; }
+  th { color:var(--muted); font-weight:600; }
+  .status { font-size:11px; padding:2px 7px; border-radius:8px; }
+  .s-done { background:rgba(62,207,142,.18); color:var(--ok); }
+  .s-running,.s-queued { background:rgba(79,140,255,.18); color:var(--accent); }
+  .s-failed { background:rgba(255,107,107,.18); color:var(--bad); }
+  .gallery { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr));
+             gap:12px; }
+  .tile { background:#0f1115; border-radius:8px; overflow:hidden; }
+  .tile video, .tile img { width:100%; display:block; max-height:220px;
+                           object-fit:contain; background:#000; }
+  .tile .cap { font-size:11px; padding:6px 8px; color:var(--muted);
+               white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  pre.log { background:#0b0d11; border-radius:8px; padding:12px; height:320px;
+            overflow:auto; font-size:11px; line-height:1.45; color:#cfe3ff;
+            white-space:pre-wrap; margin:0; }
+  .browse { font-size:11px; color:var(--accent); cursor:pointer; user-select:none; }
+  .dirlist { max-height:140px; overflow:auto; background:#0b0d11; border-radius:6px;
+             padding:6px; font-size:11px; display:none; }
+  .dirlist div { padding:3px 6px; cursor:pointer; border-radius:4px; }
+  .dirlist div:hover { background:#1d2230; }
+  a { color:var(--accent); }
+  /* 进度条 */
+  .pbar-wrap { background:#0b0d11; border-radius:6px; height:22px; overflow:hidden;
+               position:relative; margin:6px 0 4px; }
+  .pbar-fill { height:100%; background:linear-gradient(90deg,#4f8cff,#3ecf8e);
+               transition:width .4s ease; width:0%; }
+  .pbar-text { position:absolute; inset:0; display:flex; align-items:center;
+               justify-content:center; font-size:11px; color:#fff; font-weight:600; }
+  .stage-tag { font-size:11px; padding:2px 8px; border-radius:8px; margin-right:6px; }
+  .st-scan    { background:rgba(79,140,255,.2); color:var(--accent); }
+  .st-extract { background:rgba(255,193,7,.2); color:#ffc107; }
+  .st-detect  { background:rgba(156,89,255,.2); color:#9c59ff; }
+  .st-snapshot{ background:rgba(62,207,142,.2); color:var(--ok); }
+  .st-done    { background:rgba(62,207,142,.2); color:var(--ok); }
+  .st-error   { background:rgba(255,107,107,.2); color:var(--bad); }
+  .st-idle    { background:#2a2f3a; color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>videocut</h1>
+  <span id="runbadge" class="badge">idle</span>
+  <span class="badge">输出目录: <span id="outdir"></span></span>
+  <a class="badge" href="/" target="_top" style="text-decoration:none;">监控事件大屏 →</a>
+</header>
+
+<main>
+  <!-- LEFT: config + actions -->
+  <div>
+    <div class="card">
+      <p class="section-title">配置</p>
+      <label>输入文件夹（每个摄像头独立配置路径与品牌）</label>
+      <div id="input_sources_container"></div>
+      <button class="ghost" onclick="addInputSource()" style="margin:4px 0 8px;">+ 添加摄像头</button>
+
+      <label>输出文件夹</label>
+      <input id="output_dir" />
+      <div class="browse" onclick="toggleBrowse('output_dir')">浏览…</div>
+      <div class="dirlist" id="dl_output_dir"></div>
+
+      <label>工作目录（临时文件）</label>
+      <input id="work_dir" />
+
+      <label>扫描策略</label>
+      <div style="font-size:12px;color:var(--muted);padding:6px 8px;background:#0b0d11;border-radius:6px;margin-bottom:4px;">
+        自动识别目录结构：有子目录则进最新子目录取最新 N 个视频，无子目录则直接取最新 N 个视频
+      </div>
+      <div class="row">
+        <div><label>检测置信度</label><input id="det_conf" type="number" step="0.05"></div>
+      </div>
+      <div class="row">
+        <div><label>抽帧间隔(s)</label><input id="det_interval" type="number" step="0.5"></div>
+        <div>
+          <label>人物姿态识别(YOLOv8-pose)</label>
+          <select id="use_pose">
+            <option value="true">开启</option>
+            <option value="false">关闭</option>
+          </select>
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label>日期来源</label>
+          <select id="date_source">
+            <option value="either">文件名优先/回退mtime</option>
+            <option value="filename">仅文件名时间戳</option>
+            <option value="mtime">仅文件修改时间</option>
+          </select>
+        </div>
+        <div>
+          <label>摄像头品牌</label>
+          <select id="camera_brand">
+            <option value="auto">自动</option>
+            <option value="xiaomi">小米</option>
+            <option value="hikvision">海康</option>
+            <option value="dahua">大华</option>
+            <option value="generic">通用</option>
+          </select>
+        </div>
+      </div>
+      <div class="row">
+        <div><label>去重阈值</label><input id="similarity_threshold" type="number"></div>
+        <div><label>快照比例(宽:高)</label><input id="snapshot_ratio" placeholder="3:2"></div>
+      </div>
+      <div class="row">
+        <div><label>快照宽度(px)</label><input id="snapshot_width" type="number"></div>
+        <div><label>快照边距</label><input id="snapshot_padding" type="number" step="0.05"></div>
+      </div>
+
+      <label>每日自动运行</label>
+      <div class="row">
+        <select id="schedule_enabled">
+          <option value="false">关闭</option>
+          <option value="true">开启</option>
+        </select>
+        <input id="schedule_time" type="time" />
+      </div>
+
+      <label>多线程检测（并行处理多个视频）</label>
+      <div class="row">
+        <div><label>线程数</label>
+             <select id="worker_threads">
+               <option value="auto">自动（按CPU核心）</option>
+               <option value="1">1（单线程）</option>
+               <option value="2">2</option>
+               <option value="3">3</option>
+               <option value="4">4</option>
+             </select></div>
+        <div><label>帧保留天数</label>
+             <input id="frame_retention_days" type="number" min="0" value="7"></div>
+      </div>
+
+      <label>每日自动清理过期帧（已输出快照不删）</label>
+      <div class="row">
+        <select id="cleanup_enabled">
+          <option value="true">开启</option>
+          <option value="false">关闭</option>
+        </select>
+        <input id="cleanup_time" type="time" />
+        <button class="ghost" onclick="cleanupNow()" style="margin-left:8px;">立即清理</button>
+      </div>
+
+      <label>自动监控（输入文件夹有新增/变化视频时自动裁切）</label>
+      <div class="row">
+        <select id="watch_enabled">
+          <option value="false">关闭</option>
+          <option value="true">开启</option>
+        </select>
+        <div><label>轮询间隔(分钟)</label>
+             <input id="watch_interval" type="number" value="5"></div>
+      </div>
+
+      <div class="row" style="margin-top:14px;">
+        <button class="primary" onclick="saveConfig()">保存配置</button>
+        <button class="ghost" onclick="runNow()" id="btnRun">立即运行</button>
+        <button class="ghost" onclick="cancelRun()" id="btnCancel"
+                style="display:none;color:#e74c3c;border-color:#e74c3c;">停止</button>
+      </div>
+      <div class="row" style="margin-top:8px;">
+        <button class="ghost" onclick="scanVideos()">扫描测试（识别视频）</button>
+        <span id="scanstat" style="font-size:12px;color:var(--muted);align-self:center;"></span>
+      </div>
+      <div id="scanresult"
+           style="margin-top:10px;max-height:220px;overflow:auto;font-size:11px;display:none;"></div>
+    </div>
+
+    <div class="card" style="margin-top:20px;">
+      <p class="section-title">运行进度</p>
+      <div id="progress_area">
+        <div class="pbar-wrap">
+          <div class="pbar-fill" id="pbar_fill"></div>
+          <div class="pbar-text" id="pbar_text">空闲</div>
+        </div>
+        <div id="stage_detail" style="font-size:12px;color:var(--muted);margin-top:4px;"></div>
+      </div>
+      <div id="summary_area" style="margin-top:10px;"></div>
+    </div>
+
+    <div class="card" style="margin-top:20px;">
+      <p class="section-title">实时日志</p>
+      <pre class="log" id="log">—</pre>
+    </div>
+  </div>
+
+  <!-- RIGHT: tasks + previews -->
+  <div>
+    <div class="card">
+      <p class="section-title">每日任务情况</p>
+      <table id="tasks">
+        <thead><tr><th>时间</th><th>状态</th><th>输出</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div class="card" style="margin-top:20px;">
+      <p class="section-title">生成结果预览</p>
+      <div class="gallery" id="gallery"></div>
+    </div>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let _inputSources = []; // [{path, brand}]
+
+// ---- 输入源（多摄像头）管理 ----
+function renderInputSources() {
+  const container = $('input_sources_container');
+  container.innerHTML = '';
+  _inputSources.forEach((src, i) => {
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'margin-bottom:6px;';
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.style.cssText = 'align-items:flex-end;gap:4px;';
+    row.innerHTML = `
+      <div style="flex:1;">
+        <label>路径 ${i+1}</label>
+        <input class="is-path" id="is_path_${i}" value="${src.path||''}" placeholder="/host/cam1"
+               oninput="updateInputSource(${i}, 'path', this.value)">
+      </div>
+      <div>
+        <label>摄像头品牌</label>
+        <select class="is-brand" onchange="updateInputSource(${i}, 'brand', this.value)">
+          <option value="auto" ${src.brand==='auto'?'selected':''}>自动</option>
+          <option value="xiaomi" ${src.brand==='xiaomi'?'selected':''}>小米</option>
+          <option value="hikvision" ${src.brand==='hikvision'?'selected':''}>海康</option>
+          <option value="dahua" ${src.brand==='dahua'?'selected':''}>大华</option>
+          <option value="generic" ${src.brand==='generic'?'selected':''}>通用</option>
+        </select>
+      </div>
+      <button class="ghost" style="padding:6px 10px;" title="浏览目录"
+              onclick="browseInputSource(${i})">浏览</button>
+      <button class="ghost" style="color:#e74c3c;border-color:#e74c3c;padding:6px 10px;"
+              onclick="removeInputSource(${i})" title="删除">×</button>
+    `;
+    const dl = document.createElement('div');
+    dl.className = 'dirlist';
+    dl.id = `is_dl_${i}`;
+    dl.style.cssText = 'margin-top:2px;';
+    wrap.appendChild(row);
+    wrap.appendChild(dl);
+    container.appendChild(wrap);
+  });
+}
+
+// 输入源路径浏览（逐级进入 + 选择）
+async function browseInputSource(idx) {
+  const dl = $('is_dl_' + idx);
+  if (dl.style.display === 'block') { dl.style.display='none'; return; }
+  await _renderBrowseList(idx, $('is_path_' + idx).value || '/host');
+}
+
+async function _renderBrowseList(idx, path) {
+  const dl = $('is_dl_' + idx);
+  dl.style.display = 'block';
+  dl.innerHTML = '<div style="color:var(--muted);">加载中…</div>';
+  try {
+    const r = await fetch('/api/browse?path=' + encodeURIComponent(path));
+    const j = await r.json();
+    if (!j.exists) {
+      dl.innerHTML = '<div style="color:var(--bad);">目录不存在</div>';
+      return;
+    }
+    let html = `<div style="color:var(--accent);padding:3px 6px;border-bottom:1px solid #1d2230;
+                margin-bottom:2px;font-weight:600;">当前: ${j.path}</div>`;
+    // 上级目录按钮
+    const parent = j.path.replace(/\\/g,'/').replace(/\/[^/]+\/?$/,'') || '/';
+    if (parent !== j.path) {
+      html += `<div onclick="_renderBrowseList(${idx},'${parent.replace(/'/g,"\\'")}')" 
+               style="color:var(--muted);">↩ ..</div>`;
+    }
+    // 子目录列表
+    if (j.dirs.length === 0) {
+      html += '<div style="color:var(--muted);">（无子目录）</div>';
+    } else {
+      j.dirs.forEach(d => {
+        const safe = d.replace(/'/g,"\\'");
+        html += `<div onclick="_renderBrowseList(${idx},'${safe}')">📁 ${d}</div>`;
+      });
+    }
+    // 选择当前目录按钮
+    html += `<div onclick="pickInputSourceDir(${idx},'${j.path.replace(/'/g,"\\'")}')"
+             style="color:var(--ok);border-top:1px solid #1d2230;margin-top:2px;
+             padding-top:4px;font-weight:600;">✓ 使用此目录</div>`;
+    dl.innerHTML = html;
+  } catch (e) {
+    dl.innerHTML = '<div style="color:var(--bad);">出错: ' + e + '</div>';
+  }
+}
+
+function pickInputSourceDir(idx, d) {
+  if (_inputSources[idx]) _inputSources[idx].path = d;
+  const inp = $('is_path_' + idx);
+  if (inp) inp.value = d;
+  $('is_dl_' + idx).style.display = 'none';
+}
+
+function addInputSource() {
+  _inputSources.push({path: '', brand: 'auto'});
+  renderInputSources();
+}
+
+function removeInputSource(idx) {
+  _inputSources.splice(idx, 1);
+  renderInputSources();
+}
+
+function updateInputSource(idx, field, value) {
+  if (_inputSources[idx]) _inputSources[idx][field] = value;
+}
+
+async function loadConfig() {
+  const r = await fetch('/api/config'); const c = await r.json();
+  // 输入源
+  _inputSources = (c.input_sources && c.input_sources.length)
+    ? c.input_sources.map(s => ({path: s.path||'', brand: s.brand||'auto'}))
+    : [{path: c.input_dir || '/host', brand: c.camera_brand || 'auto'}];
+  renderInputSources();
+  // 其他字段
+  for (const k of Object.keys(c)) {
+    if (k === 'input_sources' || k === 'input_dir' || k === 'camera_brand') continue;
+    const el = $(k);
+    if (!el) continue;
+    if (k === 'schedule_enabled' || k === 'watch_enabled' ||
+        k === 'cleanup_enabled') el.value = c[k] ? 'true' : 'false';
+    else el.value = c[k];
+  }
+  $('outdir').textContent = c.output_dir;
+}
+
+async function saveConfig() {
+  // 过滤掉空路径
+  const sources = _inputSources.filter(s => s.path && s.path.trim());
+  if (sources.length === 0) { alert('请至少添加一个输入文件夹'); return; }
+  const c = {input_sources: sources};
+  ['output_dir','work_dir',
+   'det_conf','det_interval','date_source','similarity_threshold',
+   'snapshot_ratio','snapshot_width','snapshot_padding',
+   'schedule_time','watch_interval',
+   'worker_threads','frame_retention_days','cleanup_time'
+  ].forEach(k => { c[k] = $(k).value; });
+  c.schedule_enabled = $('schedule_enabled').value === 'true';
+  c.use_pose = $('use_pose').value === 'true';
+  c.watch_enabled = $('watch_enabled').value === 'true';
+  c.cleanup_enabled = $('cleanup_enabled').value === 'true';
+  c.camera_brand = sources[0].brand; // 兼容旧逻辑
+  await fetch('/api/config', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(c)});
+  $('outdir').textContent = c.output_dir;
+  alert('已保存');
+}
+
+async function runNow() {
+  await saveConfig();
+  const r = await fetch('/api/run', {method:'POST'});
+  const j = await r.json();
+  if (!j.ok) { alert(j.msg || '运行失败'); return; }
+  $('btnRun').style.display = 'none';
+  $('btnCancel').style.display = '';
+  refresh();
+}
+
+async function cancelRun() {
+  await fetch('/api/cancel', {method:'POST'});
+  $('btnCancel').style.display = 'none';
+  $('btnRun').style.display = '';
+  refresh();
+}
+
+async function cleanupNow() {
+  const r = await fetch('/api/cleanup', {method:'POST'});
+  const j = await r.json();
+  if (j.ok) {
+    alert('清理完成：删除 ' + (j.result.deleted || 0) + ' 个过期帧文件');
+  } else {
+    alert('清理失败：' + (j.msg || '未知错误'));
+  }
+}
+
+async function scanVideos() {
+  const sources = _inputSources.filter(s => s.path && s.path.trim());
+  if (sources.length === 0) { alert('请先添加输入文件夹'); return; }
+  $('scanstat').textContent = '扫描中…';
+  $('scanresult').style.display = 'none';
+  try {
+    // 并行扫描每个输入源（独立品牌）
+    const results = await Promise.all(sources.map(src =>
+      fetch('/api/scan?input_dir=' + encodeURIComponent(src.path) +
+            '&brand=' + encodeURIComponent(src.brand || 'auto'))
+        .then(r => r.json())
+        .then(j => ({src, j}))
+    ));
+    let totalAll = 0, todayAll = 0;
+    let html = '';
+    results.forEach(({src, j}) => {
+      if (!j.exists) {
+        html += `<div style="padding:6px 8px;border-bottom:1px solid #1d2230;color:var(--bad);">` +
+                `[${src.brand}] ${j.input_dir} — 目录不存在</div>`;
+        return;
+      }
+      totalAll += j.total; todayAll += j.today;
+      const brandLabel = {auto:'自动',xiaomi:'小米',hikvision:'海康',dahua:'大华',generic:'通用'}[src.brand] || src.brand;
+      html += `<div style="padding:6px 8px;background:#1d2230;border-radius:4px;margin-bottom:4px;">` +
+              `<b style="color:var(--accent);">${brandLabel}</b> · ${j.input_dir} ` +
+              `— 共 ${j.total} 个，今天 ${j.today} 个</div>`;
+      html += (j.videos||[]).map(v =>
+        `<div style="padding:2px 4px 2px 16px;border-bottom:1px solid #1d2230;">` +
+        `${v.name} — ${v.date || '<span style="color:var(--bad)">日期解析失败</span>'} ` +
+        `${v.date_source ? '('+v.date_source+')' : ''} — ${(v.size/1048576).toFixed(1)}MB</div>`
+      ).join('') || '<div style="padding:2px 4px 2px 16px;">无视频文件</div>';
+    });
+    $('scanstat').textContent = `共 ${sources.length} 个摄像头，总计 ${totalAll} 个视频，其中今天 ${todayAll} 个`;
+    $('scanresult').innerHTML = html || '<div>无视频文件</div>';
+    $('scanresult').style.display = 'block';
+  } catch (e) {
+    $('scanstat').textContent = '扫描出错: ' + e;
+  }
+}
+
+async function toggleBrowse(field) {
+  const dl = $('dl_' + field);
+  if (dl.style.display === 'block') { dl.style.display='none'; return; }
+  const cur = $(field).value || '/host';
+  const r = await fetch('/api/browse?path=' + encodeURIComponent(cur));
+  const j = await r.json();
+  dl.innerHTML = j.dirs.map(d => `<div onclick="pickDir('${field}','${d}')">${d}</div>`).join('')
+    || '<div>（无子目录）</div>';
+  dl.style.display = 'block';
+}
+function pickDir(field, d) { $(field).value = d; $('dl_'+field).style.display='none'; }
+
+async function refresh() {
+  const r = await fetch('/api/tasks'); const j = await r.json();
+  $('runbadge').textContent = j.running ? 'running' : 'idle';
+  $('runbadge').className = 'badge' + (j.running ? ' run' : '');
+  // 根据运行状态切换运行/停止按钮
+  $('btnRun').style.display = j.running ? 'none' : '';
+  $('btnCancel').style.display = j.running ? '' : 'none';
+
+  // 进度条
+  try {
+    const pr = await fetch('/api/progress'); const p = await pr.json();
+    const stageLabels = {scan:'扫描',extract:'抽帧',detect:'检测',snapshot:'快照',
+                         done:'完成',error:'出错',idle:'空闲'};
+    const stage = p.stage || 'idle';
+    const label = stageLabels[stage] || stage;
+    // 计算百分比
+    let pct = 0;
+    if (stage === 'done') pct = 100;
+    else if (stage === 'idle' || stage === 'error') pct = 0;
+    else if (p.total > 0) pct = Math.round((p.current / p.total) * 100);
+    else if (stage === 'scan') pct = 10;  // 扫描阶段无 total，给个最小值
+    $('pbar_fill').style.width = pct + '%';
+    $('pbar_text').textContent = pct + '%';
+    $('stage_detail').innerHTML =
+      `<span class="stage-tag st-${stage}">${label}</span>` +
+      (p.text || '');
+  } catch (e) {}
+
+  // 运行结果摘要（每个视频的处理详情）
+  try {
+    const sr = await fetch('/api/summary'); const s = await sr.json();
+    const area = $('summary_area');
+    if (s.summary && s.summary.length > 0) {
+      let html = '<p class="section-title" style="margin:0 0 8px;">运行结果摘要</p>';
+      let totalFrames = 0, totalDet = 0, totalSnap = 0;
+      s.summary.forEach((v, i) => {
+        totalFrames += v.frames_extracted || 0;
+        totalDet += v.frames_detected || 0;
+        totalSnap += v.snapshots || 0;
+        const detColor = v.snapshots > 0 ? 'var(--ok)' : 'var(--muted)';
+        const statusText = v.snapshots > 0
+          ? `${v.snapshots} 张快照`
+          : (v.frames_detected > 0 ? `${v.frames_detected} 帧检测到(去重)` : '无检测');
+        html += `<div style="background:#0b0d11;border-radius:6px;padding:8px;margin-bottom:6px;font-size:12px;">` +
+                `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">` +
+                `<b style="color:var(--accent);">${v.video}</b>` +
+                `<span style="color:${detColor};font-weight:600;">${statusText}</span>` +
+                `</div>` +
+                `<div style="color:var(--muted);display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:4px;">` +
+                `<span>时长: ${v.duration}s</span>` +
+                `<span>抽帧: ${v.frames_extracted}</span>` +
+                `<span>检测: ${v.frames_detected}</span>` +
+                `<span>用时: ${v.elapsed}s</span>` +
+                `</div>` +
+                (v.date ? `<div style="color:var(--muted);font-size:11px;margin-top:2px;">📅 ${v.date}</div>` : '') +
+                `</div>`;
+      });
+      // 汇总行
+      html += `<div style="background:rgba(79,140,255,.1);border-radius:6px;padding:8px;font-size:12px;` +
+              `display:flex;justify-content:space-around;font-weight:600;">` +
+              `<span>视频: ${s.summary.length}</span>` +
+              `<span>总抽帧: ${totalFrames}</span>` +
+              `<span>总检测: ${totalDet}</span>` +
+              `<span style="color:var(--ok);">总快照: ${totalSnap}</span>` +
+              `</div>`;
+      area.innerHTML = html;
+    } else if (!s.running) {
+      area.innerHTML = '<div style="font-size:12px;color:var(--muted);">暂无运行结果</div>';
+    } else {
+      area.innerHTML = '';
+    }
+  } catch (e) {}
+
+  // 实时日志：运行中显示当前任务的日志（每 3s 轮询自动更新），
+  // 空闲时显示最近一次任务的日志。
+  let logId = null;
+  if (j.running && j.current) {
+    logId = j.current;
+  } else if (j.tasks.length > 0) {
+    logId = j.tasks[j.tasks.length - 1].id;  // 最新任务（数组按时间顺序）
+  }
+  if (logId) {
+    try {
+      const lr = await fetch('/api/task/' + logId);
+      const lj = await lr.json();
+      const txt = lj.log || '(暂无日志)';
+      const el = $('log');
+      // 仅当内容变化时更新，避免滚动条被打断
+      if (el.textContent !== txt) {
+        const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+        el.textContent = txt;
+        if (atBottom) el.scrollTop = el.scrollHeight;
+      }
+    } catch (e) {}
+  }
+
+  // tasks table
+  const tb = $('tasks').querySelector('tbody');
+  tb.innerHTML = j.tasks.slice().reverse().map(t => `
+    <tr>
+      <td>${t.started || '-'}</td>
+      <td><span class="status s-${t.status}">${t.status}</span></td>
+      <td>${(t.outputs||[]).map(o=>`<a href="${o.url}">${o.name}</a>`).join('<br>') || '-'}</td>
+      <td><a href="#" onclick="viewLog('${t.id}');return false;">日志</a></td>
+    </tr>`).join('');
+  // previews - 只显示快照图片
+  const pr = await fetch('/api/previews'); const items = await pr.json();
+  $('gallery').innerHTML = items.map(o => `
+    <div class="tile">
+      <img src="${o.url}">
+      <div class="cap">${o.name}</div>
+    </div>`).join('') || '<div class="muted">暂无快照</div>';
+}
+
+async function viewLog(id) {
+  const r = await fetch('/api/task/' + id); const j = await r.json();
+  $('log').textContent = j.log || '(empty)';
+  $('log').scrollTop = $('log').scrollHeight;
+}
+
+setInterval(refresh, 3000);
+loadConfig().then(refresh);
+</script>
+</body>
+</html>

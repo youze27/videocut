@@ -71,7 +71,7 @@ DEFAULT_CONFIG = {
     # 每日自动清理过期帧（与定时检测独立运行）。
     "cleanup_enabled": True,
     "cleanup_time": "04:00",
-    # 网格截图：检测完成后自动拼接最新 N 张快照为网格大图。
+    # 网格截图：后端 PIL 拼接当天全部快照（5 列、最多 100 张、按时间正序）。
     "grid_cols": config.GRID_COLS,
     "grid_rows": config.GRID_ROWS,
     # 任务最长运行时间（小时），超过自动杀死。0=不限制。默认 24 小时
@@ -113,6 +113,50 @@ def save_config(cfg):
                            encoding="utf-8")
 
 
+def _apply_config_to_module(data):
+    """把配置字典同步到 config 模块（pipeline 运行时从模块读取）。
+
+    启动时和 API 保存配置时都要调用，确保持久化配置生效。
+    """
+    if "snapshot_ratio" in data and isinstance(data["snapshot_ratio"], str):
+        try:
+            parts = [int(x) for x in data["snapshot_ratio"].split(":")]
+            if len(parts) == 2:
+                config.SNAPSHOT_RATIO = tuple(parts)
+        except ValueError:
+            pass
+    if "snapshot_width" in data:
+        try:
+            config.SNAPSHOT_WIDTH = int(data["snapshot_width"])
+        except (ValueError, TypeError):
+            pass
+    if "snapshot_padding" in data:
+        try:
+            config.SNAPSHOT_PADDING = float(data["snapshot_padding"])
+        except (ValueError, TypeError):
+            pass
+    for k in ("grid_cols", "grid_rows"):
+        if k in data:
+            try:
+                setattr(config, k.upper(), max(1, int(data[k])))
+            except (ValueError, TypeError):
+                pass
+    if "scan_mode" in data:
+        config.SCAN_MODE = str(data["scan_mode"])
+    if "scan_today_only" in data:
+        config.SCAN_TODAY_ONLY = bool(data["scan_today_only"])
+    if "scan_process_hours" in data:
+        try:
+            config.SCAN_PROCESS_HOURS = float(data["scan_process_hours"])
+        except (ValueError, TypeError):
+            pass
+    if "scan_latest_count" in data:
+        try:
+            config.SCAN_LATEST_COUNT = int(data["scan_latest_count"])
+        except (ValueError, TypeError):
+            pass
+
+
 def load_tasks():
     if TASKS_PATH.exists():
         try:
@@ -128,6 +172,7 @@ def save_tasks(tasks):
 
 
 cfg = load_config()
+_apply_config_to_module(cfg)  # 启动时把持久化配置同步到 config 模块
 tasks = load_tasks()
 
 
@@ -354,6 +399,9 @@ def start_run(run_cfg=None):
         "finished": None, "log": None, "params": dict(run_cfg),
         "outputs": [],
     })
+    # 任务历史最多保留 100 条（超出则丢弃最旧的）
+    if len(tasks) > 100:
+        del tasks[:-100]
     save_tasks(tasks)
     _task_queue.put((task_id, run_cfg))
 
@@ -408,6 +456,13 @@ def reschedule():
             print(f"[sched] daily cleanup scheduled at {ct}")
         except Exception as e:
             print("cleanup schedule error:", e)
+    # 每日凌晨 00:30 拼接前一天的裁剪片段为长视频
+    try:
+        sched.add_job(daily_concat, "cron",
+                      hour=0, minute=30, id="daily_concat")
+        print("[sched] daily clip concat scheduled at 00:30")
+    except Exception as e:
+        print("concat schedule error:", e)
 
 
 def daily_cleanup():
@@ -422,6 +477,16 @@ def daily_cleanup():
         print(f"[cleanup] done: {result}")
     except Exception as e:
         print(f"[cleanup] ERROR: {e}")
+
+
+def daily_concat():
+    """每日凌晨将前一天的裁剪片段按时间顺序拼接为长视频。"""
+    try:
+        print("[concat] starting daily clip concatenation")
+        vc_main.concat_daily_clips()
+        print("[concat] done")
+    except Exception as e:
+        print(f"[concat] ERROR: {e}")
 
 
 def auto_check():
@@ -443,10 +508,11 @@ def auto_check():
         _watch_state["primed"] = True
         return
     if keys != _watch_state["seen"]:
-        _watch_state["seen"] = keys
         if not state["running"]:
+            _watch_state["seen"] = keys
             print("[watch] input changed, auto-running pipeline")
             start_run(cfg)
+        # 运行中：保持 seen 不变，留待下个 tick 检测，避免吞掉运行期间落盘的新文件
 
 
 # ---------- routes ----------
@@ -484,46 +550,7 @@ def get_config():
 @app.route("/api/config", methods=["POST"])
 def post_config():
     data = request.get_json(force=True)
-    # 把快照比例字符串 "3:2" 转成 config 需要的 tuple
-    if "snapshot_ratio" in data and isinstance(data["snapshot_ratio"], str):
-        try:
-            parts = [int(x) for x in data["snapshot_ratio"].split(":")]
-            if len(parts) == 2:
-                config.SNAPSHOT_RATIO = tuple(parts)
-        except ValueError:
-            pass
-    if "snapshot_width" in data:
-        try:
-            config.SNAPSHOT_WIDTH = int(data["snapshot_width"])
-        except (ValueError, TypeError):
-            pass
-    if "snapshot_padding" in data:
-        try:
-            config.SNAPSHOT_PADDING = float(data["snapshot_padding"])
-        except (ValueError, TypeError):
-            pass
-    # 网格截图行列数
-    for k in ("grid_cols", "grid_rows"):
-        if k in data:
-            try:
-                setattr(config, k.upper(), max(1, int(data[k])))
-            except (ValueError, TypeError):
-                pass
-    # 扫描模式相关配置同步到 config 模块（运行时读取）
-    if "scan_mode" in data:
-        config.SCAN_MODE = str(data["scan_mode"])
-    if "scan_today_only" in data:
-        config.SCAN_TODAY_ONLY = bool(data["scan_today_only"])
-    if "scan_process_hours" in data:
-        try:
-            config.SCAN_PROCESS_HOURS = float(data["scan_process_hours"])
-        except (ValueError, TypeError):
-            pass
-    if "scan_latest_count" in data:
-        try:
-            config.SCAN_LATEST_COUNT = int(data["scan_latest_count"])
-        except (ValueError, TypeError):
-            pass
+    _apply_config_to_module(data)
     cfg.update(data)
     save_config(cfg)
     reschedule()
@@ -676,7 +703,10 @@ def api_grid_latest():
 
 @app.route("/api/grid_upload", methods=["POST"])
 def api_grid_upload():
-    """接收前端 html2canvas 截取的大屏截图，保存为 grid_latest.jpg。"""
+    """保留接口：接收上传的截图并保存为 grid_latest.jpg。
+
+    当前网格截图统一由后端 PIL 拼接当天快照生成（见 main._generate_grid_snapshot），
+    前端不再上传。此接口保留以兼容外部调用。"""
     if "file" not in request.files:
         return jsonify({"ok": False, "error": "no file"}), 400
     f = request.files["file"]

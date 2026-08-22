@@ -116,3 +116,46 @@ def has_audio(path):
     except subprocess.CalledProcessError:
         return False
     return out.stdout.strip() != ""
+
+
+def clip_video(source, center_sec, clip_seconds, out_path, duration=None):
+    """从源视频裁剪 center_sec 前后 clip_seconds 秒的片段。
+
+    source: 源视频路径
+    center_sec: 事件在视频中的时间点（秒）
+    clip_seconds: 前后各裁剪的秒数（总时长 = 2 * clip_seconds）
+    out_path: 输出 mp4 路径
+    duration: 源视频总时长（秒），None 时用 ffprobe 获取
+    返回 True 成功 / False 失败。
+    """
+    source = Path(source)
+    out_path = Path(out_path)
+    if duration is None:
+        duration = video_duration(source)
+    if duration <= 0:
+        print(f"[clip] cannot get duration for {source.name}")
+        return False
+    start = max(0, center_sec - clip_seconds)
+    end = min(duration, center_sec + clip_seconds)
+    if end - start < 0.5:
+        print(f"[clip] clip too short for {source.name} @ {center_sec:.1f}s")
+        return False
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    # 重新编码（比 -c copy 更稳定，避免 hevc seek 后拷贝出错）
+    cmd = [
+        "ffmpeg", "-y",
+        "-ss", f"{start:.2f}",
+        "-to", f"{end:.2f}",
+        "-i", str(source),
+        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+        "-c:a", "aac",
+        "-avoid_negative_ts", "make_zero",
+        str(out_path),
+    ]
+    try:
+        run(cmd, capture_output=True)
+        print(f"[clip] saved {out_path.name} ({end-start:.1f}s from {source.name})")
+        return True
+    except Exception as e:
+        print(f"[clip] failed for {source.name} @ {center_sec:.1f}s: {e}")
+        return False

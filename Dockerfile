@@ -27,6 +27,7 @@ RUN find /etc/apt -name '*.list' -exec sed -i \
         curl \
         ca-certificates \
         tzdata \
+        fonts-wqy-zenhei \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

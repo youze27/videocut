@@ -186,7 +186,6 @@
     .modal-box{width:94vw;}
   }
 </style>
-<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
 </head>
 <body>
 <header>
@@ -196,6 +195,7 @@
     <div class="stat"><b id="s-person">0</b>人物</div>
     <div class="stat"><b id="s-cat">0</b>猫咪</div>
     <div class="stat"><b id="s-dog">0</b>狗狗</div>
+    <button class="toggle on" id="btn-scope" title="切换统计范围">全部</button>
   </div>
   <div class="clock" id="clock">--:--:--</div>
   <div class="actions">
@@ -538,8 +538,9 @@ function prevSlide(){
   startSlideshow();
 }
 
+let statScope = "all";   // 统计范围：all / today
 function loadData(){
-  fetch("/api/events").then(r=>r.json()).then(j=>{
+  fetch("/api/events?scope=" + statScope).then(r=>r.json()).then(j=>{
     ALL = j.events||[];
     const s = j.stats||{total:0,person:0,cat:0,dog:0};
     $("s-total").textContent=s.total;
@@ -547,13 +548,7 @@ function loadData(){
     $("s-cat").textContent=s.cat;
     $("s-dog").textContent=s.dog;
     render();
-    // pipeline 运行完会产生新事件 → 事件总数增加 → 自动截图大屏
-    // 首次加载（_lastEventCount=-1）不截图，避免页面刚打开就截
-    if(_lastEventCount >= 0 && s.total > _lastEventCount){
-      console.log(`[screenshot] 检测到新事件 ${_lastEventCount}→${s.total}，2秒后自动截图`);
-      setTimeout(captureDashboard, 2000);  // 等 2 秒让轮播渲染完图片
-    }
-    _lastEventCount = s.total;
+    // 网格截图由后端 pipeline 完成后自动拼接当天快照（grid_latest.jpg）
   }).catch(()=>{});
 }
 
@@ -656,6 +651,14 @@ $("btn-auto").addEventListener("click", ()=>{
   if(autoRefresh){ autoTimer=setInterval(loadData,30000); }
   else { clearInterval(autoTimer); autoTimer=null; }
 });
+// 统计范围切换：全部 / 今天
+$("btn-scope").addEventListener("click", ()=>{
+  statScope = statScope === "all" ? "today" : "all";
+  const b = $("btn-scope");
+  b.textContent = statScope === "all" ? "全部" : "今天";
+  b.classList.toggle("on", statScope === "all");
+  loadData();
+});
 // ---- 通用单选下拉框初始化 ----
 // 为任意 .single-select 绑定开合 + 选项点击，回调返回选中值
 function initSingleSelect(id, onChange){
@@ -735,26 +738,45 @@ function openModal(card){
   const title = `${card.dataset.time} ｜【${card.dataset.obj}】【${card.dataset.pose}】`;
   $("m-title").textContent = title;
   const body = $("m-body");
-  if(sourceVideo){
-    // 直接用 HTML5 video 播放源视频，无需插件。监听 loadedmetadata 后定位到起始时间。
-    // 如果源视频不存在或不可访问（/source 返回 403/404），降级为显示 JPG 快照。
+  // 优先播放裁剪片段（与快照同名的 .mp4），不存在则降级到源视频
+  const clipName = jpg ? jpg.replace(/\.jpg$/, ".mp4") : "";
+  const clipUrl = clipName ? `/clip/${clipName}` : "";
+  const imgFallback = jpg
+    ? `<img src="/snap/${jpg}"><div class="notice">⚠️ 片段不可访问，仅展示抓拍图片</div>`
+    : `<div class="notice">⚠️ 无可用素材</div>`;
+  if(clipUrl){
+    body.innerHTML =
+      `<video controls autoplay preload="metadata" src="${clipUrl}"></video>` +
+      `<div class="notice">🎬 裁剪片段（事件前后 ${Math.round(startTime)}s）</div>`;
+    const v = body.querySelector("video");
+    v.addEventListener("error", () => {
+      // 片段不存在，降级到源视频
+      if(sourceVideo){
+        const srcUrl = `/source?path=${encodeURIComponent(sourceVideo)}`;
+        body.innerHTML =
+          `<video controls autoplay preload="metadata" src="${srcUrl}"></video>` +
+          `<div class="notice">⏱ 已定位到源视频 ${startTime.toFixed(1)}s 处</div>`;
+        const v2 = body.querySelector("video");
+        v2.addEventListener("loadedmetadata", () => {
+          try { v2.currentTime = startTime; } catch(e) {}
+        });
+        v2.addEventListener("error", () => { body.innerHTML = imgFallback; });
+      }else{
+        body.innerHTML = imgFallback;
+      }
+    });
+  }else if(sourceVideo){
     const url = `/source?path=${encodeURIComponent(sourceVideo)}`;
-    const fallbackHtml = jpg
-      ? `<img src="/snap/${jpg}"><div class="notice">⚠️ 源视频不可访问，仅展示抓拍图片</div>`
-      : `<div class="notice">⚠️ 源视频不可访问，且无快照图片</div>`;
     body.innerHTML =
       `<video controls autoplay preload="metadata" src="${url}"></video>` +
-      `<div class="notice">⏱ 已定位到源视频 ${startTime.toFixed(1)}s 处（原始素材，未裁剪）</div>`;
+      `<div class="notice">⏱ 已定位到源视频 ${startTime.toFixed(1)}s 处</div>`;
     const v = body.querySelector("video");
     v.addEventListener("loadedmetadata", () => {
       try { v.currentTime = startTime; } catch(e) {}
     });
-    // 视频加载失败时降级为图片
-    v.addEventListener("error", () => {
-      body.innerHTML = fallbackHtml;
-    });
+    v.addEventListener("error", () => { body.innerHTML = imgFallback; });
   }else if(jpg){
-    body.innerHTML = `<img src="/snap/${jpg}"><div class="notice">⚠️ 该事件未记录源视频信息，仅展示抓拍图片</div>`;
+    body.innerHTML = imgFallback;
   }else{
     body.innerHTML = `<div class="notice">无可用素材</div>`;
   }
@@ -784,44 +806,6 @@ function closeConfig(){
 $("btn-config").addEventListener("click", openConfig);
 $("cfg-close").addEventListener("click", closeConfig);
 $("cfg-mask").addEventListener("click", closeConfig);
-
-// ---------- 自动截图大屏（pipeline 运行完产生新事件后自动触发） ----------
-let _lastEventCount = -1;   // 上次已知事件总数，-1 表示首次加载
-let _capturing = false;     // 防止并发截图
-
-async function captureDashboard(){
-  if(_capturing) return;
-  _capturing = true;
-  try{
-    // 截取整个展示大屏页面（顶部栏 + 轮播），保持当前全屏状态
-    // 临时显示底部控制条以便截到完整 UI
-    const bar = $("slideshow").querySelector(".ss-bar");
-    const wasHidden = bar && getComputedStyle(bar).opacity === "0";
-    if(bar && wasHidden) bar.style.opacity = "1";
-
-    const canvas = await html2canvas(document.body, {
-      backgroundColor: "#0f1115",
-      scale: 1,
-      logging: false,
-      useCORS: true,
-    });
-    // 恢复控制条隐藏状态
-    if(bar && wasHidden) bar.style.opacity = "";
-
-    // 转为 blob 上传到后端
-    const blob = await new Promise(res => canvas.toBlob(res, "image/jpeg", 0.85));
-    const fd = new FormData();
-    fd.append("file", blob, "grid_latest.jpg");
-    const r = await fetch("/api/grid_upload", {method:"POST", body:fd});
-    const j = await r.json();
-    if(!j.ok) throw new Error(j.error || "upload failed");
-    console.log("[screenshot] 自动截图已保存:", j.updated);
-  } catch(e){
-    console.error("[screenshot] 自动截图失败:", e);
-  } finally {
-    _capturing = false;
-  }
-}
 
 // ---- 无对象视频管理 ----
 let _noobjVideos = [];

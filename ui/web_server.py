@@ -63,19 +63,26 @@ def _load_events_index():
         return {}
 
 
-def collect_events():
-    """收集所有事件 JPG，并附加源视频元数据。"""
+def collect_events(scope="all"):
+    """收集所有事件 JPG，并附加源视频元数据。
+
+    scope: "all"（全部事件）或 "today"（仅当天事件）。统计范围与事件列表同步。
+    """
     index = _load_events_index()
     events = []
     d = Path(config.SNAPSHOTS_DIR)
     if not d.exists():
         return events, {"total": 0, "person": 0, "cat": 0, "dog": 0}
 
+    today_str = datetime.now().strftime("%Y%m%d")
     for p in sorted(d.iterdir()):
         if not p.is_file() or p.suffix.lower() != ".jpg":
             continue
         info = parse_name(p.name)
         if not info:
+            continue
+        # scope=today 时只保留当天事件
+        if scope == "today" and not info["base"].startswith(today_str + "_"):
             continue
         meta = index.get(info["base"], {})
         events.append({
@@ -107,13 +114,32 @@ def dashboard():
 
 @bp.route("/api/events")
 def api_events():
-    events, stats = collect_events()
-    return jsonify({"events": events, "stats": stats})
+    scope = request.args.get("scope", "all")
+    if scope not in ("all", "today"):
+        scope = "all"
+    events, stats = collect_events(scope=scope)
+    return jsonify({"events": events, "stats": stats, "scope": scope})
 
 
 @bp.route("/snap/<path:name>")
 def snap(name):
     return send_from_directory(config.SNAPSHOTS_DIR, name)
+
+
+@bp.route("/clip/<path:name>")
+def clip(name):
+    """提供裁剪片段 mp4 供大屏播放。从 SNAPSHOTS_DIR/clips/ 读取。"""
+    clips_dir = Path(config.SNAPSHOTS_DIR) / "clips"
+    # 安全校验：防止路径遍历
+    try:
+        root = clips_dir.resolve()
+        f = (clips_dir / name).resolve()
+        f.relative_to(root)
+    except (ValueError, RuntimeError):
+        abort(403, "forbidden")
+    if not f.exists() or not f.is_file():
+        abort(404, "clip not found")
+    return send_file(str(f), mimetype="video/mp4")
 
 
 @bp.route("/api/download/<path:name>")
@@ -124,7 +150,13 @@ def download_snap(name):
       ?download=1  强制下载（默认行为）
       ?view=1      在线预览（inline，与 /snap 等效）
     """
-    d = Path(config.SNAPSHOTS_DIR) / name
+    # 安全校验：解析后路径必须仍在 SNAPSHOTS_DIR 内（防止 ../ 路径遍历）
+    try:
+        snap_root = Path(config.SNAPSHOTS_DIR).resolve()
+        d = (snap_root / name).resolve()
+        d.relative_to(snap_root)
+    except (ValueError, RuntimeError):
+        abort(403, "forbidden: outside snapshots dir")
     if not d.exists() or not d.is_file():
         abort(404, "snapshot not found")
     if request.args.get("view"):

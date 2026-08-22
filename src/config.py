@@ -93,9 +93,9 @@ EMIT_EVENTS = os.environ.get("EMIT_EVENTS", "true").lower() == "true"
 # 事件快照裁剪：围绕检测框裁剪突出主体，统一比例与尺寸，大屏展示更整齐。
 # SNAPSHOT_RATIO 形如 "3:2"（宽:高）；SNAPSHOT_WIDTH 为输出宽度（px），高度按比例计算。
 SNAPSHOT_RATIO = tuple(int(x) for x in os.environ.get("SNAPSHOT_RATIO", "3:2").split(":"))
-SNAPSHOT_WIDTH = int(os.environ.get("SNAPSHOT_WIDTH", "720"))
+SNAPSHOT_WIDTH = int(os.environ.get("SNAPSHOT_WIDTH", "800"))
 # 裁剪区域相对检测框的扩展比例（0.25 = 检测框较大边的 25% 作为额外边距）。
-SNAPSHOT_PADDING = float(os.environ.get("SNAPSHOT_PADDING", "0.25"))
+SNAPSHOT_PADDING = float(os.environ.get("SNAPSHOT_PADDING", "0.1"))
 
 # 帧文件保留天数：超过此天数的临时帧（WORK_DIR/frames 下）自动删除。
 # 已输出的快照（SNAPSHOTS_DIR 下）不会删除。0 = 不自动清理。
@@ -105,7 +105,13 @@ FRAME_RETENTION_DAYS = int(os.environ.get("FRAME_RETENTION_DAYS", "30"))
 # "auto" = 自动按 CPU 核心数（最多 4），或用户指定整数。0/1 = 单线程。
 WORKER_THREADS = os.environ.get("WORKER_THREADS", "auto")
 
-# 检测完成后自动生成网格截图（拼接最新 N 张快照为一张大图）。
+# 检测完成后自动生成网格截图（后端 PIL 拼接当天全部快照）。
 # 保存到 OUTPUT_DIR/grid_latest.jpg，前端通过 /api/grid_latest 访问。
-GRID_COLS = int(os.environ.get("GRID_COLS", "4"))
-GRID_ROWS = int(os.environ.get("GRID_ROWS", "3"))
+# 固定 5 列、最多 100 张、按时间正序排列；GRID_COLS 控制列数。
+GRID_COLS = int(os.environ.get("GRID_COLS", "5"))
+GRID_ROWS = int(os.environ.get("GRID_ROWS", "20"))
+
+# 裁剪片段：检测到事件时，从源视频裁剪前后 CLIP_SECONDS 秒的短视频。
+# 保存到 SNAPSHOTS_DIR/clips/，与快照同名（.mp4）。点击快照时播放对应片段。
+# 凌晨定时将前一天的片段按时间顺序拼接为 YYYYMMDD.mp4。
+CLIP_SECONDS = float(os.environ.get("CLIP_SECONDS", "5"))

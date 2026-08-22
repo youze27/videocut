@@ -1,6 +1,6 @@
 # NAS 智慧家视觉检测系统 — 使用文档
 
-> 扫描 NAS 上的摄像头视频 → 抽帧 → YOLOv8 识别人/猫/狗等对象 + 姿态 → 自动生成快照 → 大屏轮播展示，全程自动化运行。
+> 扫描 NAS 上的摄像头视频 → 抽帧 → YOLOv8 识别人/猫/狗/鸟/马/羊/牛等对象 + 姿态 → 自动生成快照 → 大屏轮播展示，全程自动化运行。
 
 ---
 
@@ -106,14 +106,17 @@ docker compose up -d --build
 
 ```
 容器启动
-  ├─ reschedule() 注册定时任务
+  ├─ _cleanup_zombie_tasks()  清理上次重启残留的 running/queued 任务
+  ├─ reschedule() 注册定时任务（定时检测 / watch / 每日清理）
+  ├─ _watchdog() 后台监控线程（每分钟检查任务是否超时）
   ├─ 后台线程 _startup_autorun()
   │    └─ 延迟 3 秒 → 触发首次扫描（task_id 入队）
   │
   └─ APScheduler 后台调度
        ├─ scheduled（定时检测）  每 N 小时运行一次
        ├─ watch（目录监听）      每 N 分钟检查视频列表变化，有变化则触发
-       └─ cleanup（每日清理）    每天 04:00 清理过期临时帧
+       ├─ cleanup（每日清理）    每天 04:00 清理过期临时帧
+       └─ concat（每日拼接）     每天 00:30 将前一天的裁剪片段拼接为长视频
 ```
 
 ### 3.1 任务队列
@@ -123,23 +126,31 @@ docker compose up -d --build
 - 队列最多缓存 5 个待处理任务，超出则拒绝
 - 触发源（定时/watch/手动/启动）统一入队
 
-### 3.2 跳过已处理视频
+### 3.2 任务超时与硬终止
+
+- **Watchdog 线程**：每分钟检查当前任务运行时长，超过 `max_task_hours`（默认 24h）自动硬杀死
+- **硬杀死机制**（`/api/kill`）：推进 `generation` 代次，让旧 worker 结束时不再改写 state（避免 resurrect），同时清空队列里未开始的任务。被杀死的 worker 线程可能仍在后台跑到自行退出，但不再持有 state、不阻塞新任务
+- **软取消**（`/api/cancel`）：设置 `cancel` 标志，pipeline 在下一个检查点自行退出，适合正常停止
+- **僵尸任务清理**：服务/容器重启后，`tasks.json` 中残留的 running/queued 任务会自动标记为 failed（这些任务已随重启死掉）
+
+### 3.3 跳过已处理视频
 
 每个视频用 `path|size|mtime` 作为唯一 key 记录到 `processed.json`，重复扫描会自动跳过，不会重复处理。
 
 > 清空 `processed.json` 可强制重处理所有视频；跨运行去重逻辑（同时间戳+同对象+同姿态的快照已存在则跳过）保证不会产生重复快照。
 
-### 3.3 Pipeline 流程（每个视频）
+### 3.4 Pipeline 流程（每个视频）
 
 ```
 视频文件
-  ↓ extract_frames (ffmpeg 抽帧，每 DET_INTERVAL 秒一帧，最多 120 帧)
-  ↓ detect_objects (YOLOv8 det 模型识别对象)
+  ↓ extract_frames (ffmpeg 抽帧，每 DET_INTERVAL 秒一帧，无上限)
+  ↓ detect_objects (YOLOv8 det 模型识别对象：人/猫/狗/鸟/马/羊/牛)
   ↓ person + pose=unknown? → pose 模型再识别 + 小人物裁剪重试
   ↓ pose 仍 unknown? → _retry_pose 抽附近 ±6s 共 6 帧重试
   ↓ pHash 视觉去重（Hamming 距离 ≤ 阈值 视为重复，跳过）
   ↓ _emit_event: 裁剪到 3:2 + 画骨架 + 保存 JPG + 记录 index.json
-  ↓ 前端大屏检测到新事件 → 自动截图大屏 → 保存 grid_latest.jpg
+  ↓ _emit_event: 从源视频裁剪事件前后 CLIP_SECONDS 秒片段 → clips/同名.mp4
+  ↓ pipeline 完成后自动拼接当天快照为网格大图 → grid_latest.jpg
 ```
 
 ---
@@ -175,7 +186,9 @@ docker compose up -d --build
 | **对象/姿态下拉** | 多选筛选，可同时选多个对象或姿态 |
 | **时间下拉** | 单选：全部 / 当天 / 3天 / 7天 / 30天 |
 | **布局下拉** | 单选 1x1 ~ 6x6，控制每页展示张数 |
-| **自动刷新** | 每 30 秒拉取最新事件，检测到新事件自动截图 |
+| **自动刷新** | 每 30 秒拉取最新事件 |
+| **点击快照** | 弹窗播放**裁剪片段**（事件前后各 5 秒的 mp4）。片段不存在时自动降级到源视频原位播放 |
+| **顶部「全部/今天」按钮** | 切换统计范围。点击切换"全部事件"与"仅当天事件"，统计数字与事件列表同步切换 |
 
 ### 4.3 展示数量限制
 
@@ -183,15 +196,33 @@ docker compose up -d --build
 - 超过 360 个事件时只展示最新 360 张，计数器会提示「仅展示最新 360」
 - 顶部统计数字仍显示真实总数，不受限制
 
-### 4.4 自动截图大屏
+### 4.4 网格截图（grid_latest.jpg）
 
-- 前端每 30 秒自动刷新事件
-- 检测到事件总数增加（说明 pipeline 跑完产生新数据）→ 2 秒后自动用 `html2canvas` 截取整个大屏 → 上传保存为 `grid_latest.jpg`
+- pipeline 运行完成且产生了新快照后，后端自动用 PIL 拼接**当天全部快照**为一张高清网格大图（每格 800×533px），保存为 `grid_latest.jpg`
+- 固定 **5 列**，行数按当天快照数量自动计算
+- **最多 100 张**，超出按时间正序取前 100 张
+- 按**时间正序**排列（从早到晚，左→右、上→下）
+- **不依赖浏览器开着**：截图由后端 PIL 生成，即使大屏页面未打开也会自动更新
 - 外部可通过 `http://<IP>:8080/api/grid_latest` 访问这张截图
 
 ### 4.5 快照排序
 
 所有快照按**时间倒序**排列（最新的在前），见 [dashboard.html](file:///c:/videocut/ui/templates/dashboard.html) `applyFilter()` 中的 `filtered.sort((a, b) => (b.ts || 0) - (a.ts || 0))`。
+
+### 4.6 裁剪片段与每日拼接
+
+**裁剪片段（clips）：**
+- 每检测到一个事件，pipeline 自动用 ffmpeg 从源视频裁剪事件前后各 `CLIP_SECONDS` 秒（默认 5 秒）的短视频
+- 保存到 `snapshots/clips/` 目录，**与快照同名**（`<base>.mp4`，例如 `20260822_102530_person_pose-stand_a3f.mp4`）
+- 用 libx264 重编码（稳定，避免 hevc 无损拷贝 seek 错误）
+- **不删除**，保留作为事件原始素材
+- 大屏点击快照时优先播放对应裁剪片段，片段不存在时降级到源视频
+
+**每日长视频拼接：**
+- 每天 00:30 自动将前一天的所有裁剪片段按时间顺序拼接为长视频
+- 输出文件 `snapshots/clips/YYYYMMDD.mp4`（例如 `20260820.mp4`）
+- 用 ffmpeg concat demuxer 无损拼接，速度快
+- 已存在的每日长视频不会重复拼接
 
 ---
 
@@ -232,6 +263,20 @@ docker compose up -d --build
 | `use_pose` | `true` | 是否启用姿态识别（yolov8n-pose）。关闭则只检测对象不识别姿态，负载减半 |
 | `worker_threads` | `"auto"` | 多视频并行线程数。`auto`=按 CPU 核心数（最多4），或指定整数。**J1800 等弱 CPU 建议设 1** |
 
+**支持识别的对象（COCO 类）：**
+
+| 对象 | 说明 |
+|------|------|
+| `person` | 人（附带姿态识别） |
+| `cat` | 猫 |
+| `dog` | 狗 |
+| `bird` | 鸟（含鸡/鸭等家禽） |
+| `horse` | 马 |
+| `sheep` | 羊 |
+| `cow` | 牛 |
+
+**人物姿态标签：** `stand`（站）/ `sit`（坐）/ `squat`（蹲）/ `bend`（弯腰）/ `lie`（躺）/ `unknown`（关键点不足）。非人物对象姿态为 `none`。
+
 **det_interval 负载对照（2分钟视频）：**
 
 | det_interval | 抽帧数 | 相对负载 | 适用场景 |
@@ -241,13 +286,30 @@ docker compose up -d --build
 | 6.0s | 20 帧 | 33% | 低负载，长时间静止场景 |
 | 10.0s | 12 帧 | 20% | 极低负载，只看大致情况 |
 
-### 5.3 快照输出
+### 5.3 扫描过滤
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `scan_mode` | `"smart"` | 扫描模式。UI 固定为 `smart`（扩展名预过滤 + 当天过滤 + 最近 N 小时过滤） |
+| `scan_today_only` | `true` | 是否只扫描当天的视频（按文件夹名/文件名时间戳快速判断） |
+| `scan_process_hours` | `2` | 只处理最近 N 小时的视频（从扫描结果中再过滤）。`0`=不限制（处理当天全部） |
+| `scan_latest_count` | `30` | `scan_mode=latest` 时每个目录取最近 N 个未处理视频 |
+| `date_source` | `"either"` | 视频日期来源：`filename`（文件名解析）/ `mtime`（修改时间）/ `either`（优先文件名，回退 mtime） |
+
+**smart 扫描流程：**
+1. 按扩展名预过滤（`.mp4/.mov/.mkv` 等），非视频文件不调用 ffprobe
+2. `scan_today_only=true` 时，用正则快速判断文件夹名/文件名是否当天，跳过旧视频
+3. ffprobe 验证视频流 → 时间戳解析（文件名优先，回退 mtime）
+4. `scan_process_hours>0` 时，只保留最近 N 小时的视频
+5. 结果按时间正序处理（旧→新）
+
+### 5.4 快照输出
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `snapshot_ratio` | `"3:2"` | 快照裁剪比例（宽:高）。统一比例让大屏展示整齐 |
-| `snapshot_width` | `720` | 快照输出宽度（px），高度按比例计算 |
-| `snapshot_padding` | `0.25` | 裁剪区域相对检测框的扩展比例（0.25=扩25%边距，避免切掉肢体） |
+| `snapshot_width` | `800` | 快照输出宽度（px），高度按比例计算 |
+| `snapshot_padding` | `0.1` | 裁剪区域相对检测框的扩展比例（0.1=扩10%边距，避免切掉肢体） |
 
 **快照文件命名：**
 ```
@@ -255,7 +317,20 @@ docker compose up -d --build
 例: 20260822_102530_person_pose-stand_a3f.jpg
 ```
 
-### 5.4 自动化调度
+**裁剪片段命名：** 与快照同名，扩展名 `.mp4`，保存在 `snapshots/clips/` 下。
+```
+snapshots/clips/20260822_102530_person_pose-stand_a3f.mp4
+```
+
+### 5.5 裁剪片段
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `clip_seconds` | `5` | 裁剪片段时长（秒）。事件前后各裁剪 N 秒，总时长 = 2×N 秒。设为 0 则不生成片段 |
+
+> 每个事件检测到时自动从源视频裁剪前后各 `clip_seconds` 秒，libx264 重编码保存为与快照同名的 mp4。每天 00:30 自动将前一天的所有片段按时间顺序拼接为 `YYYYMMDD.mp4` 长视频。
+
+### 5.6 自动化调度
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
@@ -266,6 +341,7 @@ docker compose up -d --build
 | `cleanup_enabled` | `true` | 是否启用每日自动清理 |
 | `cleanup_time` | `"04:00"` | 每日清理触发时间（HH:MM） |
 | `frame_retention_days` | `30` | 临时帧保留天数。超过自动删除。**已输出的快照不会被删**。0=不清理 |
+| `max_task_hours` | `24` | 单个任务最长运行时间（小时）。超过 watchdog 自动硬杀死。`0`=不限制 |
 
 **自动化触发时机汇总：**
 
@@ -275,16 +351,17 @@ docker compose up -d --build
 | 定时检测 | 每 `schedule_interval_hours` 小时 | 周期性扫描，跳过已处理视频 |
 | 目录监听 | 每 `watch_interval` 分钟检查 | 视频列表有变化才触发，避免无意义重跑 |
 | 每日清理 | 每天 `cleanup_time` | 只删临时帧，不删快照 |
+| 每日拼接 | 每天 00:30 | 将前一天的裁剪片段按时间顺序拼接为 `YYYYMMDD.mp4` |
 | 手动触发 | `/config` 页点「运行」 | 立即入队执行 |
 
-### 5.5 网格截图
+### 5.7 网格截图
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `grid_cols` | `4` | 网格截图列数（已弃用后端拼接，改由前端 html2canvas 截取大屏） |
-| `grid_rows` | `3` | 网格截图行数 |
+| `grid_cols` | `5` | 网格截图列数（固定 5 列） |
+| `grid_rows` | `20` | 网格截图行数上限（5 列 × 20 行 = 最多 100 张） |
 
-> 当前网格截图由前端大屏自动截取（pipeline 跑完产生新事件后触发），后端不再拼接。`grid_latest.jpg` 保存的是大屏完整截图。
+> pipeline 完成后后端自动用 PIL 拼接**当天全部快照**为高清网格大图：固定 5 列、最多 100 张、按时间正序排列，保存为 `grid_latest.jpg`。不依赖浏览器开着。
 
 ---
 
@@ -311,8 +388,9 @@ curl -X POST http://localhost:8080/api/config \
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | POST | `/api/run` | 触发一次检测任务，返回 task_id |
-| POST | `/api/cancel` | 取消当前运行的任务 |
-| GET | `/api/tasks` | 获取所有任务列表与队列状态 |
+| POST | `/api/cancel` | 软取消当前任务（等 pipeline 检查点自行退出） |
+| POST | `/api/kill` | 硬杀死当前任务（立即重置 state + 清空队列，用于卡死场景） |
+| GET | `/api/tasks` | 获取所有任务列表与队列状态（含已运行时长） |
 | GET | `/api/task/<task_id>` | 获取单个任务详情与日志 |
 | GET | `/api/progress` | 获取当前任务进度 |
 | GET | `/api/summary` | 获取当前任务各视频处理摘要 |
@@ -329,31 +407,32 @@ curl -X POST http://localhost:8080/api/config \
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/api/previews` | 获取所有快照列表 |
-| GET | `/preview/snapshots/<filename>` | 预览指定快照 |
-| GET | `/api/grid_latest` | 获取最新大屏截图 |
+| GET | `/api/events?scope=all\|today` | 获取事件（大屏数据源，返回 events + stats + scope）。`scope=today` 只返回当天事件 |
+| GET | `/snap/<filename>` | 预览指定快照 |
+| GET | `/preview/snapshots/<filename>` | 预览指定快照（别名） |
+| GET | `/clip/<filename>` | 播放指定裁剪片段（mp4，从 `snapshots/clips/` 读取，带路径遍历校验） |
+| GET | `/api/download/<filename>` | 下载指定快照（`?view=1` 在线预览） |
+| GET | `/api/download` | 列出所有可下载的快照 |
+| GET | `/api/grid_latest` | 获取最新网格截图 |
 | GET | `/api/grid_info` | 获取网格截图配置与状态 |
-| POST | `/api/grid_upload` | 上传大屏截图（前端自动调用） |
+| POST | `/api/grid_upload` | 上传截图（保留接口，当前由后端自动生成） |
 
-### 6.5 无对象视频管理
+### 6.5 源视频播放
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/video?path=/host/xxx.mp4` | 流式播放视频（路径必须在输入源目录下，安全校验） |
+| GET | `/source?path=/host/xxx.mp4` | 源视频流式播放（大屏点击图片跳转用，限 INPUT_DIR 下） |
+| GET | `/dashboard` | 大屏监控页（与 `/` 等效） |
+
+### 6.6 无对象视频管理
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/api/no_object_videos` | 列出未检测到任何对象的视频 |
 | DELETE | `/api/no_object_videos` | 删除指定视频（传 `{"paths":[...]}`) |
 
-### 6.6 视频播放
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/api/video?path=/host/xxx.mp4` | 流式播放视频（路径必须在输入源目录下，安全校验） |
-
-### 6.7 事件数据
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/api/events` | 获取所有事件（大屏数据源，返回 events + stats） |
-
-### 6.8 清理
+### 6.7 清理
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -426,23 +505,34 @@ pipeline 各阶段开销（从高到低）：
 
 ```
 c:\videocut\
-├── docker-compose.yml          # 部署配置
+├── docker-compose.yml          # 部署配置（NAS 生产）
+├── docker-compose.local.yml    # 本地开发 compose
 ├── Dockerfile                  # 镜像构建（CPU 版 PyTorch）
-├── requirements.txt            # Python 依赖
+├── requirements.txt            # Python 依赖（ultralytics/opencv/PIL/imagehash）
+├── dev_server.py               # 本地 UI 调试服务器（无需 torch/ffmpeg）
+├── yolov8n.pt                  # YOLOv8 检测模型权重（Docker 内下载到 /app/models）
+├── yolov8n-pose.pt             # YOLOv8 姿态模型权重
 ├── src\                        # 核心 pipeline 代码
 │   ├── config.py              # 所有配置参数（含默认值与环境变量）
-│   ├── main.py                # pipeline 主流程：抽帧→检测→快照
-│   ├── detect.py              # YOLOv8 检测与姿态识别
-│   ├── extract.py             # ffmpeg 抽帧
-│   ├── scanner.py             # 视频扫描与时间戳解析
+│   ├── main.py                # pipeline 主流程：抽帧→检测→快照→网格图
+│   ├── detect.py              # YOLOv8 检测与姿态识别（7类对象 + 6种姿态）
+│   ├── extract.py             # ffmpeg 抽帧（按间隔 / 按时间点）
+│   ├── scanner.py             # 视频扫描（smart 模式 + 扩展名预过滤）
+│   ├── timestamp_parser.py    # 摄像头文件名时间戳解析（小米/海康/大华/通用）
 │   ├── dedup.py               # pHash 视觉去重
-│   └── utils.py               # 工具函数
+│   ├── utils.py               # 工具函数（ffmpeg/ffprobe/hash/duration）
+│   ├── bestframes.py          # [遗留] 最佳帧拼图（未启用）
+│   ├── segment.py             # [遗留] 视频分段（未启用）
+│   ├── select.py              # [遗留] 片段选择（未启用）
+│   └── stitch.py              # [遗留] 视频拼接（未启用）
 ├── ui\                         # Web UI
-│   ├── app.py                 # Flask 服务 + APScheduler 调度
-│   ├── web_server.py          # 大屏 dashboard 蓝图
+│   ├── app.py                 # Flask 服务 + APScheduler 调度 + 任务队列
+│   ├── web_server.py          # 大屏 dashboard 蓝图（事件展示 + 源视频播放）
+│   ├── requirements-ui.txt    # UI 依赖（flask/apscheduler）
 │   └── templates\
-│       ├── dashboard.html     # 大屏监控主页
+│       ├── dashboard.html     # 大屏监控主页（轮播 + 全屏 + 筛选）
 │       └── index.html         # 配置与任务管理页
+├── test_host\                  # 测试视频目录
 └── README.md                   # 本文档
 
 容器内运行时目录：
@@ -455,10 +545,14 @@ c:\videocut\
 │   └── 20260822-102530-a3f.log
 └── frames/                     # 临时抽帧文件（按 retention_days 自动清理）
 
-/host/output/snapshots/         # 快照输出目录
-├── 20260822_102530_person_pose-stand_a3f.jpg
-├── index.json                  # 快照→源视频映射（大屏点击跳转播放用）
-└── grid_latest.jpg             # 最新大屏截图（前端自动截取）
+/host/output/                   # 输出目录
+├── grid_latest.jpg             # 最新网格截图（后端 pipeline 完成后自动生成）
+└── snapshots/                  # 快照输出目录
+    ├── 20260822_102530_person_pose-stand_a3f.jpg
+    ├── index.json              # 快照→源视频映射（含 clip 字段，大屏点击播放用）
+    └── clips/                  # 裁剪片段目录（事件前后各 clip_seconds 秒）
+        ├── 20260822_102530_person_pose-stand_a3f.mp4   # 单事件片段（与快照同名）
+        └── 20260820.mp4        # 每日长视频（00:30 自动拼接前一天所有片段）
 ```
 
 ---
@@ -512,12 +606,30 @@ docker compose restart
 
 可适当降低 `det_conf` 或减小 `det_interval` 增加捕捉到清晰姿态的机会。
 
-### Q9：大屏截图（grid_latest.jpg）不更新？
+### Q9：网格截图（grid_latest.jpg）不更新？
 
-**A：** 大屏截图由前端自动触发：检测到事件总数增加 → 2 秒后自动截图。若不更新：
-1. 确认大屏页面在浏览器中保持打开
-2. 检查「自动刷新」是否开启（按钮应显示绿色 `自动刷新: 30s`）
-3. F12 控制台查看 `[screenshot]` 日志
+**A：** 网格截图由后端 pipeline 完成后自动拼接**当天快照**生成（PIL 拼接，5 列、最多 100 张、按时间正序），不依赖浏览器。若不更新：
+1. 确认 pipeline 有产生**当天**的新快照（网格只拼当天，无当天快照则不生成）
+2. 检查 `/host/output/snapshots/` 下是否有文件名以今天日期（如 `20260822_`）开头的 jpg
+3. 查看任务日志中 `[main] grid:` 开头的输出是否有报错
+
+### Q10：cancel 和 kill 有什么区别？
+
+**A：**
+- **cancel**（`/api/cancel`）：软取消，设置标志位让 pipeline 在下一个检查点自行退出，适合正常停止
+- **kill**（`/api/kill`）：硬杀死，立即重置 state 并清空队列，用于任务卡死、长时间无响应的场景。被杀死的 worker 线程可能仍在后台跑，但不再持有 state
+
+### Q11：点击快照播放的是什么视频？
+
+**A：** 点击快照优先播放**裁剪片段**（事件前后各 5 秒的 mp4，由 pipeline 检测到事件时自动用 ffmpeg 裁剪，保存在 `snapshots/clips/` 下，与快照同名）。片段不存在时（如旧快照、裁剪失败）自动降级到播放源视频并定位到事件时间点。裁剪片段时长通过 `clip_seconds` 配置（默认 5）。
+
+### Q12：每日长视频什么时候生成？
+
+**A：** 每天 00:30 自动将前一天的所有裁剪片段按时间顺序拼接为 `snapshots/clips/YYYYMMDD.mp4`。用 ffmpeg concat demuxer 无损拼接。已存在的长视频不会重复拼接。若前一天没有裁剪片段则跳过。
+
+### Q13：顶部统计如何切换"全部/今天"？
+
+**A：** 顶部统计区右侧有「全部/今天」切换按钮。点击切换统计范围：全部 = 所有历史事件，今天 = 仅当天事件。统计数字与下方事件列表会同步切换。后端通过 `/api/events?scope=today|all` 实现。
 
 ---
 
@@ -534,9 +646,14 @@ docker compose restart
   "camera_brand": "auto",
   "use_pose": true,
   "similarity_threshold": 5,
+  "scan_mode": "smart",
+  "scan_today_only": true,
+  "scan_process_hours": 2,
+  "scan_latest_count": 30,
   "snapshot_ratio": "3:2",
-  "snapshot_width": 720,
-  "snapshot_padding": 0.25,
+  "snapshot_width": 800,
+  "snapshot_padding": 0.1,
+  "clip_seconds": 5,
   "schedule_enabled": true,
   "schedule_interval_hours": 1,
   "watch_enabled": true,
@@ -545,12 +662,13 @@ docker compose restart
   "frame_retention_days": 30,
   "cleanup_enabled": true,
   "cleanup_time": "04:00",
-  "grid_cols": 4,
-  "grid_rows": 3
+  "grid_cols": 5,
+  "grid_rows": 20,
+  "max_task_hours": 24
 }
 ```
 
 ---
 
-**文档版本：** 2026-08-22
+**文档版本：** 2026-08-23
 **项目路径：** `c:\videocut\`

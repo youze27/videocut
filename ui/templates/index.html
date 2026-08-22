@@ -289,7 +289,7 @@
       </div>
     </div>
     <div class="hint">
-      网格截图由大屏前端自动截取（pipeline 产生新事件后触发）<br>
+      每次 pipeline 运行完自动生成高清网格截图（后端生成，无需浏览器开着）<br>
       固定访问：<code>http://&lt;IP&gt;:8080/api/grid_latest</code>
       <button class="ghost" onclick="window.open('/api/grid_latest','_blank')"
               style="margin-left:6px;padding:3px 8px;font-size:10px;">查看</button>
@@ -594,9 +594,9 @@ async function loadConfig() {
   $('outdir').textContent = c.output_dir;
 }
 
-async function saveConfig() {
+async function saveConfig(quiet) {
   const sources = _inputSources.filter(s => s.path && s.path.trim());
-  if (sources.length === 0) { alert('请至少添加一个输入文件夹'); return; }
+  if (sources.length === 0) { alert('请至少添加一个输入文件夹'); return false; }
   const c = {input_sources: sources};
   ['output_dir','work_dir',
    'det_conf','det_interval','similarity_threshold',
@@ -604,7 +604,7 @@ async function saveConfig() {
    'schedule_interval_hours','watch_interval',
    'worker_threads','frame_retention_days','cleanup_time',
    'grid_cols','grid_rows','max_task_hours',
-   'scan_process_hours','scan_latest_count'
+   'scan_process_hours'
   ].forEach(k => { c[k] = $(k).value; });
   c.schedule_enabled = $('schedule_enabled').value === 'true';
   c.use_pose = $('use_pose').value === 'true';
@@ -615,14 +615,22 @@ async function saveConfig() {
   c.scan_mode = 'smart';
   c.date_source = 'either';
   c.camera_brand = sources[0].brand;
-  await fetch('/api/config', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify(c)});
+  try {
+    await fetch('/api/config', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(c)});
+  } catch (e) {
+    alert('保存失败: ' + e.message);
+    return false;
+  }
   $('outdir').textContent = c.output_dir;
-  alert('已保存');
+  if (!quiet) alert('已保存');
+  return true;
 }
 
 async function runNow() {
-  await saveConfig();
+  // 静默保存配置，失败则中止
+  const ok = await saveConfig(true);
+  if (!ok) return;
   const r = await fetch('/api/run', {method:'POST'});
   const j = await r.json();
   if (!j.ok) { alert(j.msg || '运行失败'); return; }

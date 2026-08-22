@@ -133,6 +133,10 @@ def _scan_one_dir(scan_dir, brand, dir_found, stats):
         if vdt is None:
             stats["nodate"] += 1
             continue
+        # 二次校验：_quick_date 无法判断的文件，完整解析后仍需校验是否当天
+        if config.SCAN_TODAY_ONLY and not _is_today(vdt):
+            stats["old_skipped"] += 1
+            continue
         dir_found.append((p, vdt, date_src))
     stats["scanned"] += 1
 

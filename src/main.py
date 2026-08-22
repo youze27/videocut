@@ -92,20 +92,6 @@ def _record_event(base, meta):
                  encoding="utf-8")
 
 
-def _dynamic_interval(duration):
-    """根据视频时长动态计算抽帧间隔，平衡检测覆盖度与处理速度。
-
-    小视频（<2分钟，如每小时1分钟的摄像头片段）：用配置的 DET_INTERVAL（默认2s）
-    中等视频（2-10分钟）：至少 5s
-    大视频（>10分钟，如128M的连续录像）：至少 10s
-    """
-    if duration > 600:
-        return max(config.DET_INTERVAL, 10.0)
-    elif duration > 120:
-        return max(config.DET_INTERVAL, 5.0)
-    return config.DET_INTERVAL
-
-
 def _resolve_worker_threads():
     """解析 WORKER_THREADS 配置，返回实际线程数。
 
@@ -191,28 +177,65 @@ def _process_one_video(vid, vid_idx, vid_total, work_dir, processed, dfilter,
         dur = utils.video_duration(vid)
     except Exception:
         dur = 0
-    interval = _dynamic_interval(dur)
+    # 常规抽帧：严格按用户设置的 DET_INTERVAL，不做动态调整
+    interval = config.DET_INTERVAL
     expected_frames = int(dur / interval) if dur > 0 else 0
-    _progress("extract", f"抽取帧 [{vid_idx}/{vid_total}] {vid.name}",
-              vid_idx, vid_total)
+
+    # ===== 阶段1：开始处理视频 =====
+    _progress("video", f"处理第 {vid_idx}/{vid_total} 个视频: {vid.name}",
+              vid_idx, vid_total, extra={
+                  "video": vid.name, "video_idx": vid_idx, "video_total": vid_total,
+                  "duration": round(dur, 1), "expected_frames": expected_frames,
+              })
     print(f"[main] [{vid_idx}/{vid_total}] processing {vid.name}")
     print(f"[main]   path={vid}")
     print(f"[main]   duration={dur:.1f}s, interval={interval:.1f}s, "
           f"expected_frames~{expected_frames}, date={vdt}")
 
+    # ===== 阶段2：抽帧 =====
+    _progress("extract", f"抽帧中: {vid.name}（预计 ~{expected_frames} 帧）",
+              0, max(expected_frames, 1), extra={
+                  "video": vid.name, "phase": "extracting",
+                  "duration": round(dur, 1), "interval": interval,
+              })
     frames = extract.extract_frames(vid, interval_sec=interval,
                                     out_dir=work_dir / "frames" / vid.stem,
                                     max_frames=120)
     if not frames:
         print(f"[main]   WARNING: no frames extracted, skipping")
+        _progress("video_done", f"抽帧失败: {vid.name}", vid_idx, vid_total, extra={
+            "video": vid.name, "skipped": True, "duration": 0,
+            "frames_extracted": 0, "frames_detected": 0, "snapshots": 0,
+            "dedup_skipped": 0, "no_detection": 0, "elapsed": 0, "date": "",
+        })
         return key, 0, None
+    # 抽帧完成
+    _progress("extract_done", f"抽帧完成: {vid.name}（{len(frames)} 帧）",
+              len(frames), len(frames), extra={
+                  "video": vid.name, "phase": "extract_done",
+                  "frames_extracted": len(frames),
+              })
 
-    _progress("detect", f"检测物体 [{vid_idx}/{vid_total}] {vid.name} "
-              f"({len(frames)}帧)", vid_idx, vid_total)
+    # ===== 阶段3：识别（detect_objects 内部会逐帧回调进度）=====
+    # progress_cb 统一接收单个 dict（与 process() 的 _progress 接口一致）
+    _progress("detect", f"开始识别: {vid.name}（{len(frames)} 帧）",
+              0, len(frames), extra={
+                  "video": vid.name, "phase": "detect_start",
+                  "frames_extracted": len(frames),
+              })
     dets = detect.detect_objects([str(f) for f in frames],
                                  person_conf=config.DET_CONF,
                                  pet_conf=config.PET_CONF,
-                                 pose=config.USE_POSE)
+                                 pose=config.USE_POSE,
+                                 progress_cb=progress_cb,
+                                 video_name=vid.name)
+    # 识别完成统计
+    det_count = sum(1 for d in dets if d is not None)
+    _progress("detect_done", f"识别完成: {vid.name}（{det_count}/{len(frames)} 帧有对象）",
+              len(frames), len(frames), extra={
+                  "video": vid.name, "phase": "detect_done",
+                  "frames_detected": det_count, "frames_total": len(frames),
+              })
 
     kept_in_video = 0
     dedup_skipped = 0
@@ -250,14 +273,21 @@ def _process_one_video(vid, vid_idx, vid_total, work_dir, processed, dfilter,
               f"({analyze['obj_type']}/{analyze['pose']}, "
               f"score={analyze['score']:.2f}, bbox={analyze['bbox']})")
 
+        # ===== 阶段4：保存快照 =====
+        kept_in_video += 1
         emit_frame_path = analyze.get("frame_path", str(frame_path))
         emit_time = analyze.pop("_retry_time", None) or frame_time
         etime = (vdt or datetime.now()) + timedelta(seconds=emit_time)
+        _progress("snapshot", f"保存快照: {vid.name} 第 {kept_in_video} 张 "
+                  f"（{analyze['obj_type']}/{analyze['pose']} @ {emit_time:.0f}s）",
+                  kept_in_video, extra={
+                      "video": vid.name, "phase": "snapshot",
+                      "snapshot_idx": kept_in_video,
+                      "obj": analyze["obj_type"], "pose": analyze["pose"],
+                      "frame_time": round(emit_time, 1),
+                  })
         _emit_event(emit_frame_path, analyze, etime,
                     source_video=vid, start_time=emit_time)
-        kept_in_video += 1
-        _progress("snapshot", f"保存快照 [{vid_idx}/{vid_total}] {vid.name} "
-                  f"第{kept_in_video}张", vid_idx, vid_total)
 
     vid_elapsed = time.time() - vid_t0
     no_detection = len(frames) - kept_in_video - dedup_skipped
@@ -265,7 +295,8 @@ def _process_one_video(vid, vid_idx, vid_total, work_dir, processed, dfilter,
           f"{dedup_skipped} dedup-skipped, "
           f"{no_detection} no-detection, "
           f"took {vid_elapsed:.1f}s")
-    _progress("video_done", f"完成 {vid.name}", vid_idx, vid_total, extra={
+    _progress("video_done", f"完成 {vid.name}（{kept_in_video} 快照 / {det_count} 检测 / {len(frames)} 帧）",
+              vid_idx, vid_total, extra={
         "video": vid.name,
         "duration": round(dur, 1),
         "frames_extracted": len(frames),
@@ -321,13 +352,14 @@ def process(work_dir, cancel_flag=None, progress_cb=None):
     def _cancelled():
         return bool(cancel_flag and cancel_flag.get("cancel"))
 
-    def _progress(stage, text, current=0, total=0, extra=None):
+    def _progress(info):
+        """统一接口：接收单个 dict 转发给外部 progress_cb。
+
+        各阶段调用时传 {"stage":..,"text":..,"current":..,"total":..,"extra":..}。
+        _process_one_video 和 detect_objects 内部也以 dict 调用，接口一致。
+        """
         if progress_cb:
             try:
-                info = {"stage": stage, "text": text,
-                        "current": current, "total": total}
-                if extra:
-                    info["extra"] = extra
                 progress_cb(info)
             except Exception:
                 pass
@@ -335,11 +367,11 @@ def process(work_dir, cancel_flag=None, progress_cb=None):
     # 清理过期帧
     cleanup_old_frames(work_dir)
 
-    _progress("scan", "正在扫描视频文件...", 0, 0)
+    _progress({"stage": "scan", "text": "正在扫描视频文件...", "current": 0, "total": 0})
     videos = scanner.scan_videos()
     if not videos:
         print("[main] no videos found for this run; finishing.")
-        _progress("done", "未找到视频，结束", 0, 0)
+        _progress({"stage": "done", "text": "未找到视频，结束", "current": 0, "total": 0})
         return {"snapshots": 0}
 
     processed = load_processed()
@@ -365,8 +397,9 @@ def process(work_dir, cancel_flag=None, progress_cb=None):
     # 决定线程数
     worker_threads = _resolve_worker_threads()
     print(f"[main] worker_threads={worker_threads} (cpu_count={os.cpu_count()})")
-    _progress("scan", f"共 {vid_total} 个视频，{worker_threads} 线程并行处理",
-              0, vid_total)
+    _progress({"stage": "scan",
+               "text": f"共 {vid_total} 个视频，{worker_threads} 线程并行处理",
+               "current": 0, "total": vid_total})
 
     if worker_threads <= 1 or vid_total <= 1:
         # 单线程模式（保持原有顺序，调试方便）
@@ -407,8 +440,10 @@ def process(work_dir, cancel_flag=None, progress_cb=None):
     total_elapsed = time.time() - pipeline_t0
     print(f"[main] pipeline finished: {snapshot_count} snapshot(s) from "
           f"{len(videos)} video(s) in {total_elapsed:.1f}s")
-    _progress("done", f"完成：{snapshot_count} 张快照，{len(videos)} 个视频，"
-              f"用时 {total_elapsed:.1f}s", len(videos), len(videos))
+    _progress({"stage": "done",
+               "text": f"完成：{snapshot_count} 张快照，{len(videos)} 个视频，"
+                       f"用时 {total_elapsed:.1f}s",
+               "current": len(videos), "total": len(videos)})
 
     # 持久化已处理记录
     ts = datetime.now().isoformat()
@@ -418,7 +453,69 @@ def process(work_dir, cancel_flag=None, progress_cb=None):
         save_processed(processed)
         print(f"[main] marked {len(newly_processed)} video(s) as processed")
 
+    # 网格截图由前端大屏 html2canvas 截取（手动点📸截图按钮），
+    # 后端不再自动拼快照，避免与前端截图冲突。
     return {"snapshots": snapshot_count}
+
+
+def _generate_grid_snapshot():
+    """拼接最新 N 张快照为一张网格大图，保存到 OUTPUT_DIR/grid_latest.jpg。
+
+    网格大小由 config.GRID_COLS × config.GRID_ROWS 决定。
+    只保留最新一张，前端通过 /api/grid_latest 固定 URL 访问。
+    """
+    cols = max(1, config.GRID_COLS)
+    rows = max(1, config.GRID_ROWS)
+    max_count = cols * rows
+
+    # 收集所有快照 jpg 文件，按修改时间倒序（最新在前）
+    snap_dir = config.SNAPSHOTS_DIR
+    if not snap_dir.exists():
+        print("[main] grid: snapshots dir not found, skipping")
+        return
+
+    jpgs = sorted(snap_dir.glob("*.jpg"), key=lambda f: f.stat().st_mtime,
+                  reverse=True)
+    if not jpgs:
+        print("[main] grid: no snapshots found, skipping")
+        return
+
+    # 取最新 N 张
+    selected = jpgs[:max_count]
+    print(f"[main] grid: generating {cols}x{rows} grid from {len(selected)} snapshots")
+
+    # 打开所有图片，统一尺寸
+    cell_w = 480  # 每格宽度
+    cell_h = 320  # 每格高度（3:2 比例）
+    images = []
+    for jp in selected:
+        try:
+            im = Image.open(jp).convert("RGB")
+            im = im.resize((cell_w, cell_h), Image.LANCZOS)
+            images.append(im)
+        except Exception as e:
+            print(f"[main] grid: failed to open {jp.name}: {e}")
+
+    if not images:
+        print("[main] grid: no valid images, skipping")
+        return
+
+    # 创建网格大图
+    grid_w = cols * cell_w
+    grid_h = rows * cell_h
+    grid_im = Image.new("RGB", (grid_w, grid_h), (10, 13, 17))
+
+    for i, im in enumerate(images):
+        r = i // cols
+        c = i % cols
+        grid_im.paste(im, (c * cell_w, r * cell_h))
+
+    # 保存（覆盖旧文件）
+    out_path = config.OUTPUT_DIR / "grid_latest.jpg"
+    config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    grid_im.save(str(out_path), "JPEG", quality=85)
+    print(f"[main] grid: saved {len(images)} images to {out_path.name} "
+          f"({grid_w}x{grid_h})")
 
 
 def _retry_pose(vid, frame_time, dur, orig_analyze, retry_dir,
@@ -441,9 +538,13 @@ def _retry_pose(vid, frame_time, dur, orig_analyze, retry_dir,
             return orig_analyze
 
         if progress_cb:
-            progress_cb({"stage": "detect",
-                         "text": f"姿态重试 [{vid_idx}/{vid_total}] {vid.name} @ {frame_time:.0f}s",
-                         "current": vid_idx, "total": vid_total})
+            progress_cb("pose",
+                        f"姿态重试: {vid.name} @ {frame_time:.0f}s（{len(times)} 帧）",
+                        vid_idx, vid_total, extra={
+                            "video": vid.name, "phase": "pose_retry_start",
+                            "frame_time": round(frame_time, 1),
+                            "retry_frames": len(times),
+                        })
         print(f"[main]   pose retry: extracting {len(times)} frames around {frame_time:.1f}s")
 
         retry_frames = extract_frames_at_times(vid, times, retry_dir)
@@ -452,19 +553,36 @@ def _retry_pose(vid, frame_time, dur, orig_analyze, retry_dir,
             return orig_analyze
 
         # 对重试帧运行检测
+        # 注意：progress_cb 这里是 _process_one_video 的 _progress 局部函数
+        # （签名 _progress(stage,text,current,total,extra)），而 detect_objects
+        # 内部以单个 dict 调用 progress_cb(info)，需要适配器转换。
+        def _retry_progress(info):
+            progress_cb(info.get("stage", "pose"), info.get("text", ""),
+                        info.get("current", 0), info.get("total", 0),
+                        info.get("extra"))
         frame_paths = [str(fp) for _, fp in retry_frames]
         retry_dets = detect.detect_objects(frame_paths,
                                            person_conf=config.DET_CONF,
                                            pet_conf=config.PET_CONF,
-                                           pose=config.USE_POSE)
+                                           pose=config.USE_POSE,
+                                           progress_cb=_retry_progress,
+                                           video_name=f"{vid.name}(重试)")
 
         # 找第一个姿态非 unknown 的人物检测结果
-        for (rt, rfp), rdet in zip(retry_frames, retry_dets):
+        for ridx, ((rt, rfp), rdet) in enumerate(zip(retry_frames, retry_dets), 1):
             if rdet is None:
                 continue
             if rdet["obj_type"] == "person" and rdet.get("pose") != "unknown":
                 print(f"[main]   pose retry SUCCESS: found '{rdet['pose']}' at {rt:.1f}s "
                       f"(score={rdet['score']:.2f})")
+                if progress_cb:
+                    progress_cb("pose",
+                                f"姿态重试成功: {vid.name} @ {rt:.0f}s → {rdet['pose']}（第 {ridx}/{len(retry_frames)} 帧）",
+                                vid_idx, vid_total, extra={
+                                    "video": vid.name, "phase": "pose_retry_done",
+                                    "retry_idx": ridx, "retry_total": len(retry_frames),
+                                    "pose": rdet["pose"], "frame_time": round(rt, 1),
+                                })
                 result = dict(rdet)
                 result["frame_path"] = str(rfp)
                 # 更新 frame_time 为重试成功的时间点
@@ -560,6 +678,16 @@ def _emit_event(seg_path, analyze, event_time, source_video=None,
     base = f"{ts}_{obj}_pose-{pose}_{rand}"
 
     snap = config.SNAPSHOTS_DIR / f"{base}.jpg"
+
+    # 跨运行去重：若已存在同时间戳+同对象+同姿态的快照，跳过写入。
+    # 避免清空 processed.json 重处理视频时产生重复快照。
+    prefix = f"{ts}_{obj}_pose-{pose}_"
+    existing = list(config.SNAPSHOTS_DIR.glob(f"{prefix}*.jpg"))
+    if existing:
+        print(f"[events] skip duplicate: {prefix}*.jpg already exists "
+              f"({existing[0].name})")
+        return
+
     im = Image.open(analyze["frame_path"]).convert("RGB")
     # 先在原图上画骨架（关键点坐标是原图坐标），再裁剪
     if obj == "person" and analyze.get("keypoints") is not None:

@@ -11,8 +11,8 @@
     /* object labels */
     --obj-person:#D32F2F; --obj-cat:#F57C00; --obj-dog:#0277BD;
     /* pose labels */
-    --pose-fall:#C62828; --pose-stand:#2E7D32; --pose-sit:#0097A7;
-    --pose-squat:#FBC02D; --pose-unknown:#757575; --pose-none:#424242;
+    --pose-lie:#C62828; --pose-stand:#2E7D32; --pose-sit:#0097A7;
+    --pose-squat:#FBC02D; --pose-bend:#6A1B9A; --pose-unknown:#757575; --pose-none:#424242;
   }
   *{box-sizing:border-box;}
   html,body{margin:0;background:var(--bg);color:var(--fg);
@@ -34,6 +34,27 @@
   button.primary{background:#4f8cff;color:#fff;}
   .toggle.on{background:#3ecf8e;color:#04210f;}
 
+  /* ---------- 全屏模式（5秒无操作自动进入） ---------- */
+  body.kiosk header{padding:10px 24px;flex-wrap:wrap;}
+  body.kiosk header h1{font-size:22px;}
+  body.kiosk header .stat b{font-size:22px;}
+  body.kiosk header .stat{font-size:14px;padding:4px 12px;}
+  body.kiosk header .clock{font-size:22px;color:var(--fg) !important;
+    font-weight:600;margin-left:auto;}
+  /* 全屏模式：只保留顶部栏 + 轮播，隐藏筛选条、模式栏、actions */
+  body.kiosk header .actions,
+  body.kiosk .filters,
+  body.kiosk .mode-bar{display:none !important;}
+  body.kiosk #exit-kiosk{display:block;}
+  #exit-kiosk{display:none;position:fixed;top:12px;right:12px;z-index:999;
+    background:rgba(0,0,0,.7);color:#fff;border:none;border-radius:6px;
+    padding:8px 14px;font-size:14px;cursor:pointer;backdrop-filter:blur(4px);}
+  #exit-kiosk:hover{background:rgba(231,76,60,.85);}
+
+  /* body 用 flex 布局：header 固定高度，slideshow 占满剩余空间 */
+  html,body{height:100%;}
+  body{display:flex;flex-direction:column;}
+
   /* ---------- filter bar ---------- */
   .filters{display:flex;flex-wrap:wrap;gap:10px;padding:12px 18px;
     background:#171a20;border-bottom:1px solid var(--line);}
@@ -45,84 +66,101 @@
   .filters input[type=text]{background:#0f1115;border:1px solid var(--line);
     color:var(--fg);border-radius:6px;padding:7px 10px;font-size:13px;min-width:160px;}
 
+  /* ---------- 多选下拉框 ---------- */
+  .multi-select{position:relative;display:inline-flex;flex-direction:column;}
+  .ms-display{display:flex;align-items:center;gap:6px;background:#0f1115;
+    border:1px solid var(--line);border-radius:6px;padding:7px 10px;
+    cursor:pointer;font-size:13px;min-width:150px;user-select:none;
+    transition:border-color .15s;}
+  .ms-display:hover{border-color:#4f8cff;}
+  .ms-display .ms-label{color:var(--muted);font-size:12px;}
+  .ms-display .ms-selected{color:var(--fg);flex:1;overflow:hidden;
+    text-overflow:ellipsis;white-space:nowrap;}
+  .ms-display .ms-arrow{color:var(--muted);font-size:11px;
+    transition:transform .2s;}
+  .multi-select.open .ms-arrow{transform:rotate(180deg);}
+  .ms-dropdown{display:none;position:absolute;top:calc(100% + 4px);left:0;
+    min-width:100%;background:var(--card);border:1px solid var(--line);
+    border-radius:6px;padding:4px;z-index:30;max-height:260px;overflow:auto;
+    box-shadow:0 8px 24px rgba(0,0,0,.45);}
+  .multi-select.open .ms-dropdown{display:block;}
+  .ms-option{display:flex;align-items:center;gap:8px;padding:6px 8px;
+    border-radius:4px;cursor:pointer;font-size:13px;color:var(--fg);}
+  .ms-option:hover{background:#1d2230;}
+  .ms-option input{accent-color:#4f8cff;cursor:pointer;margin:0;}
+  .ms-option.ms-all{border-bottom:1px solid var(--line);margin-bottom:4px;}
+
+  /* ---------- 单选下拉框（时间/布局/间隔筛选） ---------- */
+  .single-select{position:relative;display:inline-flex;flex-direction:column;}
+  /* 复用 .ms-display / .ms-dropdown / .ms-arrow 的样式，展开规则与多选一致 */
+  .single-select.open .ms-dropdown{display:block;}
+  .ms-option.ms-single{padding:6px 10px;border-radius:4px;cursor:pointer;
+    font-size:13px;color:var(--fg);}
+  .ms-option.ms-single:hover{background:#1d2230;}
+  .ms-option.ms-single.active{background:rgba(79,140,255,.18);color:#4f8cff;
+    font-weight:600;}
+
   /* ---------- 照片墙卡片 ---------- */
-  main{padding:16px 18px;}
-  .grid{display:grid;gap:6px;}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:6px;
-    overflow:hidden;cursor:pointer;transition:transform .12s ease;}
-  .card:hover{transform:scale(1.03);}
-  .thumb{position:relative;aspect-ratio:3/2;background:#000;
-    container-type:inline-size;}
-  .thumb img{width:100%;height:100%;object-fit:cover;display:block;}
-  /* 水印标签：对象+姿态，左下角，带半透明背景，随图片大小缩放 */
-  .wm-tags{position:absolute;left:0;bottom:0;display:flex;gap:3px;
-    padding:3px 4px;}
-  .wm-tags .tag{font-size:clamp(7px,2.2cqi,12px);font-weight:600;
-    padding:1px clamp(3px,1cqi,7px);border-radius:3px;color:#fff;
-    background:rgba(0,0,0,.55);backdrop-filter:blur(2px);}
-  .wm-tags .tag.obj-person{background:rgba(211,47,47,.82);}
-  .wm-tags .tag.obj-cat{background:rgba(245,124,0,.82);}
-  .wm-tags .tag.obj-dog{background:rgba(2,119,189,.82);}
-  .wm-tags .tag.obj-unknown{background:rgba(117,117,117,.82);}
-  .wm-tags .tag.pose-fall{background:rgba(198,40,40,.82);}
-  .wm-tags .tag.pose-stand{background:rgba(46,125,50,.82);}
-  .wm-tags .tag.pose-sit{background:rgba(0,151,167,.82);}
-  .wm-tags .tag.pose-squat{background:rgba(251,192,45,.85);color:#000;}
-  .wm-tags .tag.pose-unknown{background:rgba(117,117,117,.82);}
-  .wm-tags .tag.pose-none{background:rgba(66,66,66,.82);}
-  /* 日期：右上角，带背景 */
-  .wm-date{position:absolute;right:0;top:0;font-size:clamp(7px,1.8cqi,11px);
-    color:#fff;background:rgba(0,0,0,.55);backdrop-filter:blur(2px);
-    padding:2px clamp(4px,1.2cqi,8px);border-radius:0 6px 0 5px;}
-  .play{position:absolute;right:6px;bottom:6px;width:clamp(20px,6cqi,34px);
-    height:clamp(20px,6cqi,34px);border-radius:50%;
-    background:rgba(0,0,0,.55);color:#fff;
-    font-size:clamp(9px,2.5cqi,15px);
-    display:flex;align-items:center;justify-content:center;}
+  /* main 占满剩余空间，无 padding 让轮播铺满 */
+  main{flex:1;display:flex;flex-direction:column;min-height:0;position:relative;}
+  .empty{flex:1;display:flex;align-items:center;justify-content:center;}
 
-  .more{display:block;margin:20px auto;padding:10px 22px;}
-  .empty{text-align:center;color:var(--muted);padding:60px 20px;font-size:14px;}
-
-  /* ---------- 展示模式切换 ---------- */
+  /* ---------- 轮播配置栏 ---------- */
   .mode-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
   .mode-bar .lbl{font-size:12px;color:var(--muted);}
   .mode-bar select{background:#0f1115;border:1px solid var(--line);color:var(--fg);
     border-radius:6px;padding:6px 8px;font-size:12px;}
 
-  /* ---------- 网格模式（可配置列数） ---------- */
-  .grid{display:grid;gap:14px;}
+  /* ---------- 轮播模式（首页主展示，非全屏覆盖层） ---------- */
+  /* slideshow 直接占据 header 下方的主区域，而非 fixed 全屏覆盖 */
+  .slideshow{display:flex;flex-direction:column;flex:1;min-height:0;
+    background:#000;position:relative;}
+  .ss-stage{flex:1;display:grid;gap:6px;padding:6px;overflow:hidden;
+    background:#000;width:100%;min-height:0;}
+  /* 轮播单元：复用卡片样式（圆角 + 水印标签） */
+  .ss-cell{position:relative;background:#000;overflow:hidden;
+    border-radius:8px;cursor:pointer;}
+  .ss-cell img{width:100%;height:100%;object-fit:cover;display:block;}
+  /* 水印标签：对象+姿态，左下角，背景加深确保可读 */
+  .ss-cell .wm-tags{position:absolute;left:0;bottom:0;display:flex;gap:3px;
+    padding:3px 4px;}
+  .ss-cell .wm-tags .tag{font-size:13px;font-weight:600;
+    padding:2px 8px;border-radius:4px;color:#fff;
+    background:rgba(0,0,0,.78);backdrop-filter:blur(2px);}
+  .ss-cell .wm-tags .tag.obj-person{background:rgba(211,47,47,.92);}
+  .ss-cell .wm-tags .tag.obj-cat{background:rgba(245,124,0,.92);}
+  .ss-cell .wm-tags .tag.obj-dog{background:rgba(2,119,189,.92);}
+  .ss-cell .wm-tags .tag.obj-horse{background:rgba(94,53,177,.92);}
+  .ss-cell .wm-tags .tag.obj-bird{background:rgba(255,152,0,.95);color:#000;}
+  .ss-cell .wm-tags .tag.obj-sheep{background:rgba(121,85,72,.92);}
+  .ss-cell .wm-tags .tag.obj-cow{background:rgba(63,81,181,.92);}
+  .ss-cell .wm-tags .tag.obj-unknown{background:rgba(117,117,117,.92);}
+  .ss-cell .wm-tags .tag.pose-lie{background:rgba(198,40,40,.92);}
+  .ss-cell .wm-tags .tag.pose-stand{background:rgba(46,125,50,.92);}
+  .ss-cell .wm-tags .tag.pose-sit{background:rgba(0,151,167,.92);}
+  .ss-cell .wm-tags .tag.pose-squat{background:rgba(251,192,45,.95);color:#000;}
+  .ss-cell .wm-tags .tag.pose-bend{background:rgba(106,27,154,.92);}
+  .ss-cell .wm-tags .tag.pose-unknown{background:rgba(117,117,117,.92);}
+  .ss-cell .wm-tags .tag.pose-none{background:rgba(66,66,66,.92);}
+  /* 日期：右上角 */
+  .ss-cell .wm-date{position:absolute;right:0;top:0;font-size:12px;
+    color:#fff;background:rgba(0,0,0,.78);backdrop-filter:blur(2px);
+    padding:2px 8px;border-radius:0 8px 0 6px;}
 
-  /* ---------- 时间线模式（照片墙分组） ---------- */
-  .timeline{display:flex;flex-direction:column;gap:16px;}
-  .tl-day{}
-  .tl-day-head{font-size:13px;font-weight:600;color:#4f8cff;
-    padding:6px 10px;background:rgba(79,140,255,.12);border-radius:6px;
-    margin-bottom:6px;display:flex;align-items:center;gap:8px;}
-  .tl-day-head .tl-count{font-size:11px;color:var(--muted);font-weight:400;}
-  .tl-day-grid{display:grid;gap:6px;}
-
-  /* ---------- 轮播模式 ---------- */
-  .slideshow{position:fixed;inset:0;background:#000;z-index:40;
-    display:none;flex-direction:column;}
-  .slideshow.active{display:flex;}
-  .ss-bar{display:flex;align-items:center;gap:12px;padding:8px 16px;
-    background:rgba(20,22,28,.95);border-bottom:1px solid var(--line);
-    flex-wrap:wrap;}
+  /* 控制条：底部，默认隐藏，鼠标靠近底部显示 */
+  .ss-bar{position:absolute;left:0;right:0;bottom:0;z-index:5;
+    display:flex;align-items:center;gap:12px;padding:10px 16px;
+    background:linear-gradient(transparent,rgba(10,12,16,.95) 40%);
+    flex-wrap:wrap;opacity:0;transition:opacity .25s ease;pointer-events:none;}
+  .slideshow:hover .ss-bar,
+  .ss-bar:hover{opacity:1;pointer-events:auto;}
   .ss-bar .lbl{font-size:12px;color:var(--muted);}
+  .ss-bar .ss-counter{font-size:12px;color:var(--muted);margin-right:auto;}
   .ss-bar select{background:#0f1115;border:1px solid var(--line);color:var(--fg);
     border-radius:6px;padding:5px 8px;font-size:12px;}
   .ss-bar button{padding:6px 12px;font-size:12px;}
-  /* 关键：stage 无 padding 无 gap，cell 无圆角无间距，图片填满 */
-  .ss-stage{flex:1;display:grid;gap:0;padding:0;overflow:hidden;
-    background:#000;width:100%;height:100%;}
-  .ss-cell{position:relative;background:#000;overflow:hidden;
-    display:flex;align-items:center;justify-content:center;}
-  .ss-cell img{width:100%;height:100%;object-fit:cover;display:block;}
-  .ss-cell .ss-cap{position:absolute;left:0;bottom:0;right:0;
-    font-size:11px;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.9);
-    padding:4px 8px;background:linear-gradient(transparent,rgba(0,0,0,.7));
-    display:flex;gap:6px;align-items:center;flex-wrap:wrap;}
-  .ss-progress{height:3px;background:#1a1d24;position:relative;overflow:hidden;}
+  .ss-progress{height:3px;background:#1a1d24;position:relative;overflow:hidden;
+    flex-shrink:0;}
   .ss-progress-bar{height:100%;background:var(--accent);width:0;
     transition:width .1s linear;}
 
@@ -148,6 +186,7 @@
     .modal-box{width:94vw;}
   }
 </style>
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
 </head>
 <body>
 <header>
@@ -169,132 +208,127 @@
 </header>
 
 <div class="filters">
-  <div class="group"><span class="lbl">对象</span>
-    <span class="chip active" data-f="obj" data-v="all">全部</span>
-    <span class="chip" data-f="obj" data-v="person">人物</span>
-    <span class="chip" data-f="obj" data-v="cat">猫咪</span>
-    <span class="chip" data-f="obj" data-v="dog">狗狗</span>
+  <div class="multi-select" id="ms-obj" data-f="obj">
+    <div class="ms-display">
+      <span class="ms-label">对象</span>
+      <span class="ms-selected">全部</span>
+      <span class="ms-arrow">▾</span>
+    </div>
+    <div class="ms-dropdown">
+      <label class="ms-option ms-all"><input type="checkbox" value="all" checked> <span>全部</span></label>
+      <label class="ms-option"><input type="checkbox" value="person"> <span>人物</span></label>
+      <label class="ms-option"><input type="checkbox" value="cat"> <span>猫咪</span></label>
+      <label class="ms-option"><input type="checkbox" value="dog"> <span>狗狗</span></label>
+      <label class="ms-option"><input type="checkbox" value="horse"> <span>马</span></label>
+      <label class="ms-option"><input type="checkbox" value="bird"> <span>鸡鸭</span></label>
+      <label class="ms-option"><input type="checkbox" value="sheep"> <span>羊</span></label>
+      <label class="ms-option"><input type="checkbox" value="cow"> <span>牛</span></label>
+    </div>
   </div>
-  <div class="group"><span class="lbl">姿态</span>
-    <span class="chip active" data-f="pose" data-v="all">全部姿态</span>
-    <span class="chip" data-f="pose" data-v="fall">摔倒</span>
-    <span class="chip" data-f="pose" data-v="stand">站立</span>
-    <span class="chip" data-f="pose" data-v="sit">坐下</span>
-    <span class="chip" data-f="pose" data-v="squat">蹲下</span>
-    <span class="chip" data-f="pose" data-v="unknown">无法判断</span>
-    <span class="chip" data-f="pose" data-v="none">无姿态</span>
+  <div class="multi-select" id="ms-pose" data-f="pose">
+    <div class="ms-display">
+      <span class="ms-label">姿态</span>
+      <span class="ms-selected">全部姿态</span>
+      <span class="ms-arrow">▾</span>
+    </div>
+    <div class="ms-dropdown">
+      <label class="ms-option ms-all"><input type="checkbox" value="all" checked> <span>全部姿态</span></label>
+      <label class="ms-option"><input type="checkbox" value="lie"> <span>躺</span></label>
+      <label class="ms-option"><input type="checkbox" value="stand"> <span>站立</span></label>
+      <label class="ms-option"><input type="checkbox" value="sit"> <span>坐下</span></label>
+      <label class="ms-option"><input type="checkbox" value="squat"> <span>蹲下</span></label>
+      <label class="ms-option"><input type="checkbox" value="bend"> <span>弯腰</span></label>
+      <label class="ms-option"><input type="checkbox" value="unknown"> <span>未知</span></label>
+      <label class="ms-option"><input type="checkbox" value="none"> <span>无姿态</span></label>
+    </div>
   </div>
-  <div class="group"><span class="lbl">时间</span>
-    <span class="chip active" data-f="time" data-v="all">全部</span>
-    <span class="chip" data-f="time" data-v="1">近1h</span>
-    <span class="chip" data-f="time" data-v="6">近6h</span>
-    <span class="chip" data-f="time" data-v="24">近24h</span>
+  <div class="single-select" id="ss-time" data-f="time">
+    <div class="ms-display">
+      <span class="ms-label">时间</span>
+      <span class="ms-selected">全部</span>
+      <span class="ms-arrow">▾</span>
+    </div>
+    <div class="ms-dropdown">
+      <div class="ms-option ms-single active" data-v="all">全部</div>
+      <div class="ms-option ms-single" data-v="1">近1h</div>
+      <div class="ms-option ms-single" data-v="6">近6h</div>
+      <div class="ms-option ms-single" data-v="24">近24h</div>
+      <div class="ms-option ms-single" data-v="72">近3天</div>
+      <div class="ms-option ms-single" data-v="168">近7天</div>
+      <div class="ms-option ms-single" data-v="720">近30天</div>
+    </div>
   </div>
-  <div class="group"><span class="lbl">搜索</span>
-    <input type="text" id="kw" placeholder="模糊匹配时间/类型">
+  <div class="single-select" id="ss-grid" data-f="grid">
+    <div class="ms-display">
+      <span class="ms-label">布局</span>
+      <span class="ms-selected">4x5 (20张)</span>
+      <span class="ms-arrow">▾</span>
+    </div>
+    <div class="ms-dropdown">
+      <div class="ms-option ms-single" data-v="1x1">1x1 (1张)</div>
+      <div class="ms-option ms-single" data-v="2x2">2x2 (4张)</div>
+      <div class="ms-option ms-single" data-v="3x3">3x3 (9张)</div>
+      <div class="ms-option ms-single" data-v="3x4">3x4 (12张)</div>
+      <div class="ms-option ms-single" data-v="4x4">4x4 (16张)</div>
+      <div class="ms-option ms-single active" data-v="4x5">4x5 (20张)</div>
+      <div class="ms-option ms-single" data-v="5x5">5x5 (25张)</div>
+      <div class="ms-option ms-single" data-v="5x6">5x6 (30张)</div>
+      <div class="ms-option ms-single" data-v="6x6">6x6 (36张)</div>
+    </div>
   </div>
-</div>
-
-<div class="filters mode-bar">
-  <span class="lbl">展示模式</span>
-  <select id="mode-select">
-    <option value="grid">网格</option>
-    <option value="timeline">时间线</option>
-    <option value="slideshow">轮播</option>
-  </select>
-  <span class="lbl" id="cols-lbl">列数</span>
-  <select id="cols-select">
-    <option value="2">2列</option>
-    <option value="3">3列</option>
-    <option value="4" selected>4列</option>
-    <option value="5">5列</option>
-    <option value="6">6列</option>
-    <option value="8">8列</option>
-  </select>
-  <span class="lbl" id="ss-lbl" style="display:none">轮播间隔</span>
-  <select id="ss-interval" style="display:none">
-    <option value="2">2秒</option>
-    <option value="3">3秒</option>
-    <option value="5" selected>5秒</option>
-    <option value="8">8秒</option>
-    <option value="10">10秒</option>
-    <option value="15">15秒</option>
-    <option value="30">30秒</option>
-  </select>
-  <span class="lbl" id="ss-grid-lbl" style="display:none">轮播布局</span>
-  <select id="ss-grid" style="display:none">
-    <option value="1x1" selected>1x1 (1张)</option>
-    <option value="1x2">1x2 (2张)</option>
-    <option value="1x3">1x3 (3张)</option>
-    <option value="2x2">2x2 (4张)</option>
-    <option value="2x3">2x3 (6张)</option>
-    <option value="3x3">3x3 (9张)</option>
-    <option value="3x4">3x4 (12张)</option>
-    <option value="4x4">4x4 (16张)</option>
-    <option value="4x5">4x5 (20张)</option>
-    <option value="5x5">5x5 (25张)</option>
-    <option value="5x6">5x6 (30张)</option>
-    <option value="6x6">6x6 (36张)</option>
-    <option value="6x8">6x8 (48张)</option>
-    <option value="8x8">8x8 (64张)</option>
-    <option value="8x10">8x10 (80张)</option>
-    <option value="10x10">10x10 (100张)</option>
-    <option value="10x12">10x12 (120张)</option>
-    <option value="12x12">12x12 (144张)</option>
-  </select>
+  <div class="single-select" id="ss-interval" data-f="interval">
+    <div class="ms-display">
+      <span class="ms-label">间隔</span>
+      <span class="ms-selected">5秒</span>
+      <span class="ms-arrow">▾</span>
+    </div>
+    <div class="ms-dropdown">
+      <div class="ms-option ms-single" data-v="2">2秒</div>
+      <div class="ms-option ms-single" data-v="3">3秒</div>
+      <div class="ms-option ms-single active" data-v="5">5秒</div>
+      <div class="ms-option ms-single" data-v="8">8秒</div>
+      <div class="ms-option ms-single" data-v="10">10秒</div>
+      <div class="ms-option ms-single" data-v="15">15秒</div>
+      <div class="ms-option ms-single" data-v="30">30秒</div>
+    </div>
+  </div>
 </div>
 
 <main>
-  <div class="grid" id="grid"></div>
-  <div class="timeline" id="timeline" style="display:none"></div>
-  <button class="more" id="more" style="display:none">加载更多</button>
   <div class="empty" id="empty" style="display:none">暂无事件数据</div>
-</main>
-
-<!-- 轮播模式全屏覆盖层 -->
-<div class="slideshow" id="slideshow">
-  <div class="ss-bar">
-    <span class="lbl">轮播中</span>
-    <span id="ss-counter" style="font-size:12px;color:var(--muted);"></span>
-    <span class="lbl">间隔</span>
-    <select id="ss-interval-2">
-      <option value="2">2秒</option>
-      <option value="3">3秒</option>
-      <option value="5" selected>5秒</option>
-      <option value="8">8秒</option>
-      <option value="10">10秒</option>
-      <option value="15">15秒</option>
-      <option value="30">30秒</option>
-    </select>
-    <span class="lbl">布局</span>
-    <select id="ss-grid-2">
-      <option value="1x1" selected>1x1 (1张)</option>
-      <option value="1x2">1x2 (2张)</option>
-      <option value="1x3">1x3 (3张)</option>
-      <option value="2x2">2x2 (4张)</option>
-      <option value="2x3">2x3 (6张)</option>
-      <option value="3x3">3x3 (9张)</option>
-      <option value="3x4">3x4 (12张)</option>
-      <option value="4x4">4x4 (16张)</option>
-      <option value="4x5">4x5 (20张)</option>
-      <option value="5x5">5x5 (25张)</option>
-      <option value="5x6">5x6 (30张)</option>
-      <option value="6x6">6x6 (36张)</option>
-      <option value="6x8">6x8 (48张)</option>
-      <option value="8x8">8x8 (64张)</option>
-      <option value="8x10">8x10 (80张)</option>
-      <option value="10x10">10x10 (100张)</option>
-      <option value="10x12">10x12 (120张)</option>
-      <option value="12x12">12x12 (144张)</option>
-    </select>
-    <button id="ss-prev">◀ 上一组</button>
-    <button id="ss-pause">⏸ 暂停</button>
-    <button id="ss-next">下一组 ▶</button>
-    <button class="primary" id="ss-exit" style="margin-left:auto">退出轮播</button>
+  <div class="slideshow" id="slideshow">
+    <div class="ss-stage" id="ss-stage"></div>
+    <div class="ss-bar">
+      <span class="ss-counter" id="ss-counter"></span>
+      <span class="lbl">布局</span>
+      <select id="ss-grid-2">
+        <option value="1x1">1x1 (1张)</option>
+        <option value="2x2">2x2 (4张)</option>
+        <option value="3x3">3x3 (9张)</option>
+        <option value="3x4">3x4 (12张)</option>
+        <option value="4x4">4x4 (16张)</option>
+        <option value="4x5" selected>4x5 (20张)</option>
+        <option value="5x5">5x5 (25张)</option>
+        <option value="5x6">5x6 (30张)</option>
+        <option value="6x6">6x6 (36张)</option>
+      </select>
+      <span class="lbl">间隔</span>
+      <select id="ss-interval-2">
+        <option value="2">2秒</option>
+        <option value="3">3秒</option>
+        <option value="5" selected>5秒</option>
+        <option value="8">8秒</option>
+        <option value="10">10秒</option>
+        <option value="15">15秒</option>
+        <option value="30">30秒</option>
+      </select>
+      <button id="ss-prev">◀ 上一组</button>
+      <button id="ss-pause">⏸ 暂停</button>
+      <button id="ss-next">下一组 ▶</button>
+    </div>
+    <div class="ss-progress"><div class="ss-progress-bar" id="ss-progress-bar"></div></div>
   </div>
-  <div class="ss-stage" id="ss-stage"></div>
-  <div class="ss-progress"><div class="ss-progress-bar" id="ss-progress-bar"></div></div>
-</div>
+</main>
 
 <div class="modal hidden" id="modal">
   <div class="modal-mask" id="m-mask"></div>
@@ -348,25 +382,28 @@
 <script>
 const OBJ = {
   person:{t:"人物",c:"obj-person"}, cat:{t:"猫咪",c:"obj-cat"},
-  dog:{t:"狗狗",c:"obj-dog"}, unknown:{t:"未知",c:"obj-unknown"}
+  dog:{t:"狗狗",c:"obj-dog"}, horse:{t:"马",c:"obj-horse"},
+  bird:{t:"鸡鸭",c:"obj-bird"}, sheep:{t:"羊",c:"obj-sheep"},
+  cow:{t:"牛",c:"obj-cow"}, unknown:{t:"未知",c:"obj-unknown"}
 };
 const POSE = {
-  fall:{t:"摔倒",c:"pose-fall"}, stand:{t:"站立",c:"pose-stand"},
+  // 兼容旧数据：fall → lie
+  lie:{t:"躺",c:"pose-lie"}, fall:{t:"躺",c:"pose-lie"},
+  stand:{t:"站立",c:"pose-stand"},
   sit:{t:"坐下",c:"pose-sit"}, squat:{t:"蹲下",c:"pose-squat"},
-  unknown:{t:"无法判断",c:"pose-unknown"}, none:{t:"无姿态",c:"pose-none"}
+  bend:{t:"弯腰",c:"pose-bend"},
+  unknown:{t:"未知",c:"pose-unknown"}, none:{t:"无姿态",c:"pose-none"}
 };
 
 let ALL = [];          // current events from server
-let shown = 120;
-const filter = {obj:"all", pose:"all", time:"all", kw:""};
+// obj/pose 用 Set 支持多选；time 仍为单值
+const filter = {obj:new Set(["all"]), pose:new Set(["all"]), time:"all"};
 let autoRefresh = true;
 let autoTimer = null;
 
-// 展示模式状态
-let viewMode = "grid";       // grid | timeline | slideshow
-let gridCols = 4;            // 网格列数
+// 轮播状态（首页唯一展示方式）
 let ssInterval = 5;          // 轮播间隔（秒）
-let ssGrid = "1x1";          // 轮播布局 "RxC"
+let ssGrid = "4x5";          // 轮播布局 "RxC"，默认 4x5
 let ssIndex = 0;             // 轮播当前索引
 let ssPaused = false;
 let ssTimer = null;
@@ -384,74 +421,53 @@ function tag(cls, text){ return `<span class="tag ${cls}">${text}</span>`; }
 
 function applyFilter(list){
   const now = Math.floor(Date.now() / 1000);  // 当前 Unix 时间戳（秒）
-  const kw = filter.kw.trim().toLowerCase();
-  return list.filter(e=>{
-    if(filter.obj!=="all" && e.objType!==filter.obj) return false;
-    if(filter.pose!=="all" && e.poseType!==filter.pose) return false;
+  // 旧数据归一化：fall → lie
+  const normPose = p => (p === "fall") ? "lie" : p;
+  const filtered = list.filter(e=>{
+    // 多选：未选"全部"时，对象类型需在选中集合内
+    if(!filter.obj.has("all") && !filter.obj.has(e.objType)) return false;
+    if(!filter.pose.has("all") && !filter.pose.has(normPose(e.poseType))) return false;
     if(filter.time!=="all"){
       // 用服务器返回的 ts（Unix 秒），避免时区偏差
       const t = e.ts || 0;
       if(!t || now - t > filter.time*3600) return false;
     }
-    if(kw){
-      const hay = (e.timeFull+" "+e.objType+" "+e.poseType).toLowerCase();
-      if(!hay.includes(kw)) return false;
-    }
     return true;
   });
+  // 按时间倒序：最新的（ts 最大）排在前面
+  filtered.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  return filtered;
 }
 
-function cardHtml(e){
+// 展示图片最大值：防止事件过多导致大屏卡顿，仅展示最新 MAX_DISPLAY 张
+const MAX_DISPLAY = 360;
+let _totalFiltered = 0;  // 筛选后真实总数（未截断），用于计数器显示
+
+// 返回经过筛选+上限截断后的展示列表（按时间倒序，最新在前）
+function getDisplayList(){
+  const filtered = applyFilter(ALL);
+  _totalFiltered = filtered.length;
+  return filtered.length > MAX_DISPLAY ? filtered.slice(0, MAX_DISPLAY) : filtered;
+}
+
+// 轮播单元 HTML：卡片样式（水印标签 + 日期），文字背景加深
+function cellHtml(e){
   const o = OBJ[e.objType]||OBJ.unknown;
   const p = POSE[e.poseType]||POSE.unknown;
   const img = e.jpg ? `/snap/${e.jpg}` : "";
-  const hasSrc = e.sourceVideo ? "▶" : "";
-  return `<div class="card" data-jpg="${e.jpg||""}"
+  return `<div class="ss-cell" data-jpg="${e.jpg||""}"
                data-source="${e.sourceVideo||""}"
                data-start="${e.startTime||0}"
                data-time="${e.timeFull}" data-obj="${o.t}" data-pose="${p.t}">
-    <div class="thumb">
-      <img loading="lazy" src="${img}" alt="">
-      <div class="wm-date">${e.timeShort}</div>
-      <div class="wm-tags">${tag(o.c,o.t)} ${tag(p.c,p.t)}</div>
-      ${hasSrc?`<span class="play">${hasSrc}</span>`:``}
-    </div>
+    <img loading="lazy" src="${img}" alt="">
+    <div class="wm-date">${e.timeShort}</div>
+    <div class="wm-tags">${tag(o.c,o.t)} ${tag(p.c,p.t)}</div>
   </div>`;
-}
-
-function renderGrid(filtered){
-  const grid = $("grid");
-  const slice = filtered.slice(0, shown);
-  grid.style.gridTemplateColumns = `repeat(${gridCols}, 1fr)`;
-  grid.innerHTML = slice.map(cardHtml).join("");
-  $("more").style.display = filtered.length>shown ? "block" : "none";
-}
-
-function renderTimeline(filtered){
-  const tl = $("timeline");
-  if(filtered.length === 0){ tl.innerHTML = ""; return; }
-
-  // 按日期分组，每组用照片墙网格展示
-  const groups = {};
-  filtered.forEach(e=>{
-    const day = e.timeFull.slice(0, 10);  // YYYY-MM-DD
-    if(!groups[day]) groups[day] = [];
-    groups[day].push(e);
-  });
-  const days = Object.keys(groups).sort().reverse();
-  tl.innerHTML = days.map(day=>{
-    const items = groups[day];
-    const cards = items.map(cardHtml).join("");
-    return `<div class="tl-day">
-      <div class="tl-day-head">📅 ${day} <span class="tl-count">${items.length} 个事件</span></div>
-      <div class="tl-day-grid" style="grid-template-columns:repeat(${gridCols},1fr);">${cards}</div>
-    </div>`;
-  }).join("");
 }
 
 function renderSlideshow(filtered){
   if(filtered.length === 0){
-    $("ss-stage").innerHTML = '<div style="color:var(--muted);font-size:16px;">暂无事件</div>';
+    $("ss-stage").innerHTML = '<div style="color:var(--muted);font-size:16px;display:flex;align-items:center;justify-content:center;height:100%;">暂无事件</div>';
     $("ss-counter").textContent = "";
     return;
   }
@@ -466,48 +482,18 @@ function renderSlideshow(filtered){
   const stage = $("ss-stage");
   stage.style.gridTemplateColumns = `repeat(${g.cols}, 1fr)`;
   stage.style.gridTemplateRows = `repeat(${g.rows}, 1fr)`;
-  stage.innerHTML = slice.map(e=>{
-    const o = OBJ[e.objType]||OBJ.unknown;
-    const p = POSE[e.poseType]||POSE.unknown;
-    const img = e.jpg ? `/snap/${e.jpg}` : "";
-    return `<div class="ss-cell">
-      <img src="${img}" alt="">
-      <div class="ss-cap">${tag(o.c,o.t)} ${tag(p.c,p.t)} ${e.timeShort}</div>
-    </div>`;
-  }).join("");
+  stage.innerHTML = slice.map(cellHtml).join("");
 
-  $("ss-counter").textContent = `第 ${ssIndex+1}/${pages} 页（共 ${filtered.length} 个事件，每页 ${perPage} 张）`;
+  const more = _totalFiltered > filtered.length;
+  $("ss-counter").textContent = `第 ${ssIndex+1}/${pages} 页（共 ${_totalFiltered} 个事件${more ? `，仅展示最新 ${filtered.length}` : ""}，每页 ${perPage} 张）`;
 }
 
 function render(){
-  const filtered = applyFilter(ALL);
-  $("empty").style.display = filtered.length===0 ? "block" : "none";
-
-  if(viewMode === "grid"){
-    $("grid").style.display = "grid";
-    $("timeline").style.display = "none";
-    $("more").style.display = "none";
-    renderGrid(filtered);
-  } else if(viewMode === "timeline"){
-    $("grid").style.display = "none";
-    $("timeline").style.display = "block";
-    $("more").style.display = "none";
-    renderTimeline(filtered);
-  } else if(viewMode === "slideshow"){
-    $("grid").style.display = "none";
-    $("timeline").style.display = "none";
-    $("more").style.display = "none";
-    $("slideshow").classList.add("active");
-    ssIndex = 0;
-    renderSlideshow(filtered);
-    startSlideshow();
-  }
-
-  // 轮播退出时隐藏覆盖层
-  if(viewMode !== "slideshow"){
-    $("slideshow").classList.remove("active");
-    stopSlideshow();
-  }
+  const filtered = getDisplayList();
+  $("empty").style.display = filtered.length===0 ? "flex" : "none";
+  // 仅渲染轮播（已移除网格/时间线模式）
+  renderSlideshow(filtered);
+  startSlideshow();
 }
 
 // ---------- 轮播控制 ----------
@@ -533,7 +519,7 @@ function stopSlideshow(){
 }
 
 function nextSlide(){
-  const filtered = applyFilter(ALL);
+  const filtered = getDisplayList();
   const g = parseGrid(ssGrid);
   const pages = Math.ceil(filtered.length / g.perPage);
   if(pages === 0) return;
@@ -543,7 +529,7 @@ function nextSlide(){
 }
 
 function prevSlide(){
-  const filtered = applyFilter(ALL);
+  const filtered = getDisplayList();
   const g = parseGrid(ssGrid);
   const pages = Math.ceil(filtered.length / g.perPage);
   if(pages === 0) return;
@@ -561,30 +547,105 @@ function loadData(){
     $("s-cat").textContent=s.cat;
     $("s-dog").textContent=s.dog;
     render();
+    // pipeline 运行完会产生新事件 → 事件总数增加 → 自动截图大屏
+    // 首次加载（_lastEventCount=-1）不截图，避免页面刚打开就截
+    if(_lastEventCount >= 0 && s.total > _lastEventCount){
+      console.log(`[screenshot] 检测到新事件 ${_lastEventCount}→${s.total}，2秒后自动截图`);
+      setTimeout(captureDashboard, 2000);  // 等 2 秒让轮播渲染完图片
+    }
+    _lastEventCount = s.total;
   }).catch(()=>{});
 }
 
 // ---- filters ----
-document.querySelectorAll(".chip[data-f]").forEach(ch=>{
-  ch.addEventListener("click", ()=>{
-    const f = ch.dataset.f, v = ch.dataset.v;
-    document.querySelectorAll(`.chip[data-f="${f}"]`).forEach(x=>x.classList.remove("active"));
-    ch.classList.add("active");
-    filter[f] = v;
-    shown = 120;
-    render();
+// ---- 多选下拉框（对象/姿态）----
+// 更新显示框文案：选了哪些
+function updateMSDisplay(ms){
+  const f = ms.dataset.f;
+  const sel = filter[f];
+  const display = ms.querySelector(".ms-selected");
+  const allLabel = ms.querySelector(".ms-all span").textContent;
+  if(sel.has("all")){
+    display.textContent = allLabel;
+    return;
+  }
+  const names = Array.from(sel).map(v=>{
+    const opt = ms.querySelector(`input[value="${v}"]`);
+    return opt ? opt.nextElementSibling.textContent : v;
   });
-});
-$("kw").addEventListener("input", e=>{ filter.kw=e.target.value; shown=120; render(); });
+  if(names.length === 0){
+    display.textContent = allLabel;
+  } else if(names.length <= 2){
+    display.textContent = names.join("、");
+  } else {
+    display.textContent = `已选 ${names.length} 项`;
+  }
+}
 
-$("more").addEventListener("click", ()=>{ shown+=120; render(); });
+// 切换下拉框开合（同时关闭其他下拉）
+function toggleMS(id){
+  const ms = $(id);
+  const isOpen = ms.classList.contains("open");
+  document.querySelectorAll(".multi-select.open").forEach(m=>m.classList.remove("open"));
+  if(!isOpen) ms.classList.add("open");
+}
+
+// 绑定两个多选下拉
+document.querySelectorAll(".multi-select").forEach(ms=>{
+  // 点击显示框切换开合
+  ms.querySelector(".ms-display").addEventListener("click", ()=>toggleMS(ms.id));
+  // 选项 checkbox 变化
+  ms.querySelectorAll('input[type=checkbox]').forEach(cb=>{
+    cb.addEventListener("change", ()=>{
+      const f = ms.dataset.f;
+      const sel = filter[f];
+      const val = cb.value;
+      if(val === "all"){
+        // 选"全部" → 清空其他
+        sel.clear();
+        sel.add("all");
+        ms.querySelectorAll('input[type=checkbox]').forEach(c=>{
+          c.checked = (c.value === "all");
+        });
+      } else {
+        sel.delete("all");
+        ms.querySelector('input[value="all"]').checked = false;
+        if(cb.checked) sel.add(val);
+        else sel.delete(val);
+        // 全部取消后自动回到"全部"，避免空集
+        if(sel.size === 0){
+          sel.add("all");
+          ms.querySelector('input[value="all"]').checked = true;
+        }
+      }
+      updateMSDisplay(ms);
+      render();
+    });
+  });
+  updateMSDisplay(ms);
+});
+
+// 点击下拉框外部关闭（同时处理多选和单选）
+document.addEventListener("click", e=>{
+  if(!e.target.closest(".multi-select") && !e.target.closest(".single-select")){
+    document.querySelectorAll(".multi-select.open,.single-select.open").forEach(m=>m.classList.remove("open"));
+  }
+});
+
 $("btn-refresh").addEventListener("click", loadData);
 $("btn-clear").addEventListener("click", ()=>{
-  filter.obj="all"; filter.pose="all"; filter.time="all"; filter.kw="";
-  $("kw").value=""; shown=120;
-  document.querySelectorAll(".chip[data-f]").forEach(x=>{
-    x.classList.toggle("active", x.dataset.v==="all");
+  // 重置多选下拉为"全部"
+  filter.obj.clear(); filter.obj.add("all");
+  filter.pose.clear(); filter.pose.add("all");
+  filter.time="all";
+  document.querySelectorAll(".multi-select").forEach(ms=>{
+    ms.querySelectorAll('input[type=checkbox]').forEach(c=>{
+      c.checked = (c.value === "all");
+    });
+    updateMSDisplay(ms);
   });
+  // 重置时间单选下拉为"全部"
+  syncSingleSelect("ss-time", "all");
   render();
 });
 $("btn-auto").addEventListener("click", ()=>{
@@ -595,47 +656,65 @@ $("btn-auto").addEventListener("click", ()=>{
   if(autoRefresh){ autoTimer=setInterval(loadData,30000); }
   else { clearInterval(autoTimer); autoTimer=null; }
 });
-
-// ---- 展示模式切换 ----
-function updateModeUI(){
-  const showCols = viewMode === "grid" || viewMode === "timeline";
-  const isSS = viewMode === "slideshow";
-  $("cols-lbl").style.display = showCols ? "" : "none";
-  $("cols-select").style.display = showCols ? "" : "none";
-  $("ss-lbl").style.display = isSS ? "" : "none";
-  $("ss-interval").style.display = isSS ? "" : "none";
-  $("ss-grid-lbl").style.display = isSS ? "" : "none";
-  $("ss-grid").style.display = isSS ? "" : "none";
+// ---- 通用单选下拉框初始化 ----
+// 为任意 .single-select 绑定开合 + 选项点击，回调返回选中值
+function initSingleSelect(id, onChange){
+  const ss = $(id);
+  ss.querySelector(".ms-display").addEventListener("click", ()=>{
+    const isOpen = ss.classList.contains("open");
+    document.querySelectorAll(".multi-select.open,.single-select.open").forEach(m=>m.classList.remove("open"));
+    if(!isOpen) ss.classList.add("open");
+  });
+  ss.querySelectorAll(".ms-option.ms-single").forEach(opt=>{
+    opt.addEventListener("click", ()=>{
+      ss.querySelectorAll(".ms-option.ms-single").forEach(x=>x.classList.remove("active"));
+      opt.classList.add("active");
+      ss.querySelector(".ms-selected").textContent = opt.textContent;
+      ss.classList.remove("open");
+      onChange(opt.dataset.v);
+    });
+  });
 }
-$("mode-select").addEventListener("change", e=>{
-  viewMode = e.target.value;
-  updateModeUI();
-  render();
-});
-$("cols-select").addEventListener("change", e=>{
-  gridCols = parseInt(e.target.value);
-  render();
-});
-$("ss-interval").addEventListener("change", e=>{
-  ssInterval = parseInt(e.target.value);
-  $("ss-interval-2").value = e.target.value;
-  startSlideshow();
-});
-$("ss-grid").addEventListener("change", e=>{
-  ssGrid = e.target.value;
-  $("ss-grid-2").value = e.target.value;
+// 同步单个 select 的选中值（用于底部控制条）
+function syncSelect(id, val){
+  const sel = $(id);
+  if(sel) sel.value = val;
+}
+// 同步单选下拉框的选中态 + 显示文案（用于底部 select 反向同步顶部下拉框）
+function syncSingleSelect(id, val){
+  const ss = $(id);
+  if(!ss) return;
+  ss.querySelectorAll(".ms-option.ms-single").forEach(x=>{
+    x.classList.toggle("active", x.dataset.v === val);
+  });
+  const cur = ss.querySelector(".ms-option.ms-single.active");
+  ss.querySelector(".ms-selected").textContent = cur ? cur.textContent : "";
+}
+
+// ---- 时间筛选（单选下拉框）----
+initSingleSelect("ss-time", v=>{ filter.time = v; render(); });
+
+// ---- 轮播配置（顶部单选下拉框 + 底部原生 select 双向同步）----
+initSingleSelect("ss-grid", v=>{
+  ssGrid = v;
+  syncSelect("ss-grid-2", v);
   ssIndex = 0;
   render();
 });
-// 轮播控制栏
+initSingleSelect("ss-interval", v=>{
+  ssInterval = parseInt(v);
+  syncSelect("ss-interval-2", v);
+  startSlideshow();
+});
+// 底部控制条原生 select → 同步顶部下拉框
 $("ss-interval-2").addEventListener("change", e=>{
   ssInterval = parseInt(e.target.value);
-  $("ss-interval").value = e.target.value;
+  syncSingleSelect("ss-interval", e.target.value);
   startSlideshow();
 });
 $("ss-grid-2").addEventListener("change", e=>{
   ssGrid = e.target.value;
-  $("ss-grid").value = e.target.value;
+  syncSingleSelect("ss-grid", e.target.value);
   ssIndex = 0;
   render();
 });
@@ -646,12 +725,6 @@ $("ss-pause").addEventListener("click", ()=>{
   $("ss-pause").textContent = ssPaused ? "▶ 继续" : "⏸ 暂停";
   if(ssPaused) stopSlideshow();
   else startSlideshow();
-});
-$("ss-exit").addEventListener("click", ()=>{
-  viewMode = "grid";
-  $("mode-select").value = "grid";
-  updateModeUI();
-  render();
 });
 
 // ---- modal ----
@@ -692,11 +765,9 @@ function closeModal(){
   body.innerHTML=""; // release video/src to avoid memory leak
   $("modal").classList.add("hidden");
 }
-$("grid").addEventListener("click", e=>{
-  const card=e.target.closest(".card"); if(card) openModal(card);
-});
-$("timeline").addEventListener("click", e=>{
-  const card=e.target.closest(".card"); if(card) openModal(card);
+// 轮播单元点击 → 打开详情弹窗
+$("ss-stage").addEventListener("click", e=>{
+  const cell=e.target.closest(".ss-cell"); if(cell) openModal(cell);
 });
 $("m-close").addEventListener("click", closeModal);
 $("m-mask").addEventListener("click", closeModal);
@@ -713,6 +784,44 @@ function closeConfig(){
 $("btn-config").addEventListener("click", openConfig);
 $("cfg-close").addEventListener("click", closeConfig);
 $("cfg-mask").addEventListener("click", closeConfig);
+
+// ---------- 自动截图大屏（pipeline 运行完产生新事件后自动触发） ----------
+let _lastEventCount = -1;   // 上次已知事件总数，-1 表示首次加载
+let _capturing = false;     // 防止并发截图
+
+async function captureDashboard(){
+  if(_capturing) return;
+  _capturing = true;
+  try{
+    // 截取整个展示大屏页面（顶部栏 + 轮播），保持当前全屏状态
+    // 临时显示底部控制条以便截到完整 UI
+    const bar = $("slideshow").querySelector(".ss-bar");
+    const wasHidden = bar && getComputedStyle(bar).opacity === "0";
+    if(bar && wasHidden) bar.style.opacity = "1";
+
+    const canvas = await html2canvas(document.body, {
+      backgroundColor: "#0f1115",
+      scale: 1,
+      logging: false,
+      useCORS: true,
+    });
+    // 恢复控制条隐藏状态
+    if(bar && wasHidden) bar.style.opacity = "";
+
+    // 转为 blob 上传到后端
+    const blob = await new Promise(res => canvas.toBlob(res, "image/jpeg", 0.85));
+    const fd = new FormData();
+    fd.append("file", blob, "grid_latest.jpg");
+    const r = await fetch("/api/grid_upload", {method:"POST", body:fd});
+    const j = await r.json();
+    if(!j.ok) throw new Error(j.error || "upload failed");
+    console.log("[screenshot] 自动截图已保存:", j.updated);
+  } catch(e){
+    console.error("[screenshot] 自动截图失败:", e);
+  } finally {
+    _capturing = false;
+  }
+}
 
 // ---- 无对象视频管理 ----
 let _noobjVideos = [];
@@ -832,9 +941,52 @@ function tick(){
   $("clock").textContent=`${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 tick(); setInterval(tick,1000);
+</script>
 
+<button id="exit-kiosk" onclick="exitKiosk()">✕ 退出全屏</button>
+
+<script>
 loadData();
 autoTimer=setInterval(loadData,30000);
+
+// ---------- 5秒无操作自动全屏 ----------
+let _idleTimer = null;
+const KIOSK_DELAY = 5000;  // 5秒无操作
+
+function enterKiosk(){
+  if(document.body.classList.contains('kiosk')) return;
+  document.body.classList.add('kiosk');
+  // 尝试请求浏览器全屏（需用户交互后才能生效，静默失败也无妨）
+  try{ document.documentElement.requestFullscreen?.(); }catch(e){}
+  // 全屏模式下隐藏筛选条/配置栏/退出按钮，只保留顶部栏 + 轮播（由 CSS 控制）
+  render();
+}
+
+function exitKiosk(){
+  document.body.classList.remove('kiosk');
+  try{ document.exitFullscreen?.(); }catch(e){}
+  resetIdleTimer();
+}
+
+function resetIdleTimer(){
+  if(_idleTimer) clearTimeout(_idleTimer);
+  _idleTimer = setTimeout(enterKiosk, KIOSK_DELAY);
+}
+
+// 监听用户操作（鼠标移动、点击、键盘、滚动、触摸）
+['mousemove','click','keydown','scroll','touchstart'].forEach(ev=>{
+  window.addEventListener(ev, ()=>{
+    if(document.body.classList.contains('kiosk')){
+      // 全屏模式下任意操作退出全屏
+      exitKiosk();
+    } else {
+      resetIdleTimer();
+    }
+  }, {passive:true});
+});
+
+// 启动倒计时
+resetIdleTimer();
 </script>
 </body>
 </html>

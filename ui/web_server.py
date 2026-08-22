@@ -9,8 +9,8 @@ main control app (single port) and also run standalone on :5000.
 通过 /source 路由直接跳转到源视频的对应位置播放（HTML5 video，无需插件）。
 
 文件命名： <YYYYMMDD_HHMMSS>_<obj>_pose-<pose>_<rand>.jpg
-  obj  : person | cat | dog
-  pose : fall | stand | sit | squat | unknown | none
+  obj  : person | cat | dog | horse | bird | sheep | cow
+  pose : lie | stand | sit | squat | bend | unknown | none
 """
 import json
 import re
@@ -25,7 +25,7 @@ from src import config
 bp = Blueprint("dashboard", __name__, template_folder="templates")
 
 _NAME_RE = re.compile(
-    r"(\d{8})_(\d{6})_(person|cat|dog)_pose-([A-Za-z]+)_(.+)\.jpg$")
+    r"(\d{8})_(\d{6})_(person|cat|dog|horse|bird|sheep|cow)_pose-([A-Za-z]+)_(.+)\.jpg$")
 
 
 def parse_name(name):
@@ -33,6 +33,9 @@ def parse_name(name):
     if not m:
         return None
     d8, t6, obj, pose, rand = m.groups()
+    # 兼容旧数据：fall → lie
+    if pose == "fall":
+        pose = "lie"
     time_full = f"{d8[0:4]}-{d8[4:6]}-{d8[6:8]} {t6[0:2]}:{t6[2:4]}:{t6[4:6]}"
     time_short = f"{d8[4:6]}-{d8[6:8]} {t6[0:2]}:{t6[2:4]}"
     # Unix 时间戳（秒），由服务器端解析，避免浏览器时区偏差

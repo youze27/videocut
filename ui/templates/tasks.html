@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>videocut 任务</title>
+<style>
+  :root { --bg:#0f1115; --card:#1a1d24; --fg:#e6e6e6; --muted:#9aa0aa;
+          --accent:#4f8cff; --ok:#3ecf8e; --bad:#ff6b6b; --line:#2a2f3a; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;
+         background:var(--bg); color:var(--fg); }
+  header { padding:12px 20px; background:var(--card); display:flex;
+           align-items:center; gap:12px; flex-wrap:wrap; border-bottom:1px solid var(--line); }
+  header h1 { font-size:16px; margin:0; }
+  .badge { font-size:12px; padding:3px 8px; border-radius:10px;
+           background:#2a2f3a; color:var(--muted); }
+  .badge.run { background:rgba(79,140,255,.2); color:var(--accent); }
+
+  main { padding:16px; display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .card { background:var(--card); border-radius:10px; padding:14px; }
+  .card.full { grid-column:1 / -1; }
+  .section-title { font-size:12px; text-transform:uppercase; letter-spacing:.06em;
+                   color:var(--accent); margin:0 0 10px; font-weight:600;
+                   border-bottom:1px solid var(--line); padding-bottom:6px; }
+
+  button { cursor:pointer; border:none; border-radius:5px; padding:7px 12px;
+           font-size:12px; font-weight:600; }
+  .primary { background:var(--accent); color:#fff; }
+  .primary:hover { background:#3a7ae8; }
+  .ghost { background:#2a2f3a; color:var(--fg); }
+  .ghost:hover { background:#343a48; }
+  .danger { color:#e74c3c; border:1px solid #e74c3c; background:transparent; }
+
+  .actions-bar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .actions-bar .scan-stat { font-size:11px; color:var(--muted); margin-left:auto; }
+
+  /* 进度条 */
+  .pbar-wrap { background:#0b0d11; border-radius:6px; height:22px; overflow:hidden;
+               position:relative; margin:4px 0; }
+  .pbar-fill { height:100%; background:linear-gradient(90deg,#4f8cff,#3ecf8e);
+               transition:width .4s ease; width:0%; }
+  .pbar-text { position:absolute; inset:0; display:flex; align-items:center;
+               justify-content:center; font-size:11px; color:#fff; font-weight:600; }
+  .stage-tag { font-size:11px; padding:2px 8px; border-radius:8px; margin-right:6px; }
+  .st-scan    { background:rgba(79,140,255,.2); color:var(--accent); }
+  .st-extract,.st-extract_done { background:rgba(255,193,7,.2); color:#ffc107; }
+  .st-detect,.st-detect_done  { background:rgba(156,89,255,.2); color:#9c59ff; }
+  .st-pose    { background:rgba(233,30,99,.2); color:#ec407a; }
+  .st-snapshot{ background:rgba(62,207,142,.2); color:var(--ok); }
+  .st-video   { background:rgba(0,188,212,.2); color:#00bcd4; }
+  .st-done    { background:rgba(62,207,142,.2); color:var(--ok); }
+  .st-error   { background:rgba(255,107,107,.2); color:var(--bad); }
+  .st-idle    { background:#2a2f3a; color:var(--muted); }
+
+  .dp-item { background:#0b0d11; border-radius:6px; padding:8px 10px; }
+  .dp-item .dp-label { font-size:10px; color:var(--muted); text-transform:uppercase;
+                       letter-spacing:.04em; margin-bottom:2px; }
+  .dp-item .dp-value { font-size:13px; color:var(--fg); font-weight:600; }
+  .dp-item .dp-sub { font-size:11px; color:var(--muted); margin-top:2px; }
+
+  .ov-stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr));
+              gap:8px; margin-top:10px; }
+  .ov-stat { background:#0b0d11; border:1px solid var(--line); border-radius:8px; padding:8px 10px; }
+  .ov-stat .ov-label { font-size:10px; color:var(--muted); text-transform:uppercase;
+                       letter-spacing:.04em; white-space:nowrap; }
+  .ov-stat .ov-value { font-size:18px; font-weight:700; color:var(--fg); margin-top:2px;
+                       font-variant-numeric:tabular-nums; line-height:1.2; }
+  .ov-stat .ov-sub { font-size:10px; color:var(--muted); margin-top:2px; }
+
+  .vid-table { width:100%; border-collapse:collapse; font-size:11px; }
+  .vid-table th, .vid-table td { text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); }
+  .vid-table th { color:var(--muted); font-weight:600; position:sticky; top:0; background:var(--card); }
+  .vid-table tr.vid-current td { background:rgba(79,140,255,.08); }
+
+  pre.log { background:#0b0d11; border-radius:8px; padding:10px; height:320px;
+            overflow:auto; font-size:11px; line-height:1.45; color:#cfe3ff;
+            white-space:pre-wrap; margin:0; }
+
+  .task-table { width:100%; border-collapse:collapse; font-size:11px; }
+  .task-table th, .task-table td { text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); }
+  .task-table th { color:var(--muted); font-weight:600; }
+  .task-table tr { cursor:pointer; }
+  .task-table tr:hover { background:#1d2230; }
+  .task-table tr.active { background:rgba(79,140,255,.15); }
+  .status { font-size:10px; padding:2px 6px; border-radius:8px; }
+  .s-done { background:rgba(62,207,142,.18); color:var(--ok); }
+  .s-running,.s-queued { background:rgba(79,140,255,.18); color:var(--accent); }
+  .s-failed { background:rgba(255,107,107,.18); color:var(--bad); }
+  .s-cancelled { background:rgba(154,160,170,.18); color:var(--muted); }
+  .s-killed { background:rgba(255,107,107,.22); color:#ff8c8c; }
+  .s-timeout { background:rgba(255,152,0,.2); color:#ffa726; }
+
+  a { color:var(--accent); }
+  code { background:#0b0d11; padding:1px 5px; border-radius:3px; font-size:11px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>videocut 任务</h1>
+  <span id="runbadge" class="badge">idle</span>
+  <a class="badge" href="/" target="_top" style="text-decoration:none;">监控事件大屏 →</a>
+  <a class="badge" href="/config" target="_top" style="text-decoration:none;">⚙ 配置 →</a>
+</header>
+
+<main>
+  <!-- ===== 操作按钮（跨两列） ===== -->
+  <div class="card full">
+    <div class="actions-bar">
+      <button class="ghost" onclick="cancelRun()" id="btnCancel" style="display:none;">⏸ 停止(软)</button>
+      <button class="danger" onclick="killRun()" id="btnKill" style="display:none;">⏹ 杀死(强制)</button>
+      <a class="ghost" href="/config" target="_top" style="text-decoration:none;padding:7px 12px;border-radius:5px;font-size:12px;font-weight:600;display:inline-block;">⚙ 去配置并运行</a>
+      <span id="runelapsed" class="scan-stat" style="color:var(--accent);font-weight:600;"></span>
+    </div>
+  </div>
+
+  <!-- ===== 运行进度 + 摘要（跨两列） ===== -->
+  <div class="card full">
+    <p class="section-title">📊 运行进度</p>
+    <div class="pbar-wrap">
+      <div class="pbar-fill" id="pbar_fill"></div>
+      <div class="pbar-text" id="pbar_text">空闲</div>
+    </div>
+    <div id="stage_detail" style="font-size:12px;color:var(--muted);margin-top:4px;"></div>
+
+    <div id="detail_progress" style="margin-top:10px;display:none;">
+      <div style="font-size:11px;color:var(--accent);font-weight:600;margin-bottom:6px;
+                  text-transform:uppercase;letter-spacing:.04em;">详细进度</div>
+      <div id="detail_grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px;"></div>
+    </div>
+
+    <div id="ov_stats" style="display:none;">
+      <div style="font-size:11px;color:var(--accent);font-weight:600;margin:10px 0 6px;
+                  text-transform:uppercase;letter-spacing:.04em;">总体统计</div>
+      <div class="ov-stats" id="ov_grid"></div>
+    </div>
+
+    <div id="vid_section" style="display:none;">
+      <div style="font-size:11px;color:var(--accent);font-weight:600;margin:10px 0 6px;
+                  text-transform:uppercase;letter-spacing:.04em;">视频处理明细</div>
+      <div style="max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:8px;">
+        <table class="vid-table">
+          <thead>
+            <tr><th>#</th><th>视频</th><th>状态</th><th>时长</th><th>抽帧</th><th>检出</th><th>快照</th><th>去重</th><th>无检测</th><th>用时</th></tr>
+          </thead>
+          <tbody id="vid_tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 实时日志（跨两列） ===== -->
+  <div class="card full">
+    <p class="section-title">📋 实时日志</p>
+    <pre class="log" id="log">—</pre>
+  </div>
+
+  <!-- ===== 任务历史（跨两列，紧凑表格） ===== -->
+  <div class="card full">
+    <p class="section-title">📜 任务历史</p>
+    <div style="max-height:320px;overflow:auto;">
+      <table class="task-table">
+        <thead>
+          <tr><th>任务ID</th><th>状态</th><th>开始</th><th>完成</th><th>总抽帧</th><th>人物帧</th><th>去重</th><th>快照</th><th>用时</th></tr>
+        </thead>
+        <tbody id="task_tbody"></tbody>
+      </table>
+    </div>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let _currentTaskId = null;
+let _logTaskId = null;
+let _logOffset = 0;
+let _pollMs = 3000;
+const _MAX_LOG_CHARS = 200000;  // 日志 DOM 上限，超出则截断，避免长任务冻结浏览器
+let _historyAgg = null;         // 查看历史任务时缓存的聚合指标
+let _historySummary = null;     // 查看历史任务时缓存的逐视频明细
+
+function fmtDuration(sec){
+  if (sec == null || isNaN(sec)) return '-';
+  sec = Math.floor(sec);
+  if (sec < 60) return sec + 's';
+  const m = Math.floor(sec / 60), s = sec % 60;
+  if (m < 60) return m + 'm' + s + 's';
+  const h = Math.floor(m / 60), mm = m % 60;
+  return h + 'h' + mm + 'm';
+}
+function calcDuration(t, elapsed){
+  if (elapsed != null) return fmtDuration(elapsed);
+  if (!t.started) return '-';
+  const s = Date.parse(t.started.replace(' ', 'T'));
+  const e = t.finished ? Date.parse(t.finished.replace(' ', 'T')) : Date.now();
+  if (isNaN(s) || isNaN(e)) return '-';
+  return fmtDuration((e - s) / 1000);
+}
+
+function renderDetailProgress(p, running){
+  const box = $('detail_progress');
+  const grid = $('detail_grid');
+  const stage = p.stage || 'idle';
+  const extra = p.extra || {};
+
+  if (!running || stage === 'idle' || stage === 'done' || stage === 'error') {
+    box.style.display = 'none';
+    return;
+  }
+  box.style.display = 'block';
+
+  const items = [];
+  if (extra.video) {
+    if (stage === 'video') {
+      items.push(['视频进度', `${extra.video_idx}/${extra.video_total}`,
+                  extra.duration ? `时长 ${extra.duration}s` : '']);
+    } else {
+      items.push(['当前视频', extra.video, '']);
+    }
+  }
+  if (stage === 'extract') {
+    items.push(['抽帧进度',
+                p.current > 0 ? `${p.current}/${p.total} 帧` : '进行中',
+                `预计 ${p.total} 帧 · 间隔 ${extra.interval||'-'}s`]);
+  }
+  if (stage === 'extract_done') {
+    items.push(['抽帧结果', `${p.current} 帧`, '']);
+  }
+  if (stage === 'detect') {
+    items.push(['识别进度', `${p.current}/${p.total} 帧`,
+                extra.detected_so_far != null ? `已检出 ${extra.detected_so_far} 帧` : '']);
+    if (extra.frame) items.push(['当前帧', extra.frame,
+                                  extra.result ? `结果: ${extra.result}` : '']);
+  }
+  if (stage === 'detect_done') {
+    items.push(['识别结果', `${extra.frames_detected||p.current}/${extra.frames_total||p.total} 帧有人物`, '']);
+  }
+  if (stage === 'pose') {
+    const phaseTxt = {pose_inference:'姿态推理中', crop_retry:'裁剪重试中',
+                      pose_retry_start:'姿态重试启动',
+                      pose_retry_done:'姿态重试成功'}[extra.phase] || '处理中';
+    items.push(['姿态阶段', phaseTxt,
+                extra.frame ? `帧: ${extra.frame}` : '']);
+    if (extra.pose) items.push(['识别姿态', extra.pose, '']);
+    if (extra.retry_frames) items.push(['重试帧数', `${extra.retry_frames} 帧`, '']);
+    if (extra.retry_idx != null) items.push(['重试进度', `${extra.retry_idx}/${extra.retry_total}`, '']);
+    if (extra.frame_time != null) items.push(['视频时间', `${extra.frame_time}s`, '']);
+  }
+  if (stage === 'snapshot') {
+    items.push(['快照序号', `第 ${p.current} 张`, '']);
+    if (extra.obj) items.push(['人物/姿态', `${extra.obj}/${extra.pose||'-'}`, '']);
+    if (extra.frame_time != null) items.push(['视频时间', `${extra.frame_time}s`, '']);
+  }
+
+  if (items.length === 0 && p.text) {
+    items.push(['当前状态', p.text, '']);
+  }
+
+  grid.innerHTML = items.map(([lbl, val, sub]) =>
+    `<div class="dp-item">
+       <div class="dp-label">${lbl}</div>
+       <div class="dp-value">${val}</div>
+       ${sub ? `<div class="dp-sub">${sub}</div>` : ''}
+     </div>`
+  ).join('');
+}
+
+function renderOvStats(agg, running) {
+  const box = $('ov_stats');
+  if (!running || !agg) { box.style.display = 'none'; return; }
+  box.style.display = 'block';
+  const pct = agg.total_videos > 0
+    ? Math.min(100, Math.round(((agg.processed_videos + agg.skipped) / agg.total_videos) * 100))
+    : 0;
+  const items = [
+    ['视频进度', `${agg.processed_videos + agg.skipped}/${agg.total_videos}`,
+     `${pct}% · 已处理 ${agg.processed_videos} · 跳过 ${agg.skipped}`],
+    ['总抽帧', agg.total_frames || 0, '抽取的帧数'],
+    ['检出人物帧', agg.total_detected || 0, '检测到人物的帧'],
+    ['生成快照', agg.total_snapshots || 0, '已保存的 JPG'],
+    ['去重跳过', agg.total_dedup || 0, '相似帧去重'],
+    ['无检测帧', agg.total_no_detection || 0, '未检出人物的帧'],
+  ];
+  $('ov_grid').innerHTML = items.map(([lbl, val, sub]) =>
+    `<div class="ov-stat">
+       <div class="ov-label">${lbl}</div>
+       <div class="ov-value" style="color:${lbl==='生成快照'?'var(--ok)':''}">${val}</div>
+       ${sub ? `<div class="ov-sub">${sub}</div>` : ''}
+     </div>`
+  ).join('');
+}
+
+function renderVidTable(summary, running) {
+  const box = $('vid_section');
+  if (!running || !summary || summary.length === 0) { box.style.display = 'none'; return; }
+  box.style.display = 'block';
+  const rows = summary.map((v, i) => {
+    const name = (v.video || '').split(/[\\/]/).pop() || v.video || '-';
+    const status = v.skipped
+      ? '<span class="status s-cancelled">跳过</span>'
+      : (v.snapshots > 0
+         ? `<span class="status s-done">${v.snapshots} 快照</span>`
+         : (v.frames_detected > 0
+            ? `<span class="status s-cancelled">去重</span>`
+            : '<span class="status s-failed">无检测</span>'));
+    return `<tr>
+      <td style="color:var(--muted);">${i+1}</td>
+      <td title="${v.video||''}" style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${name}</td>
+      <td>${status}</td>
+      <td>${v.duration != null ? v.duration + 's' : '-'}</td>
+      <td>${v.frames_extracted || 0}</td>
+      <td>${v.frames_detected || 0}</td>
+      <td style="color:${v.snapshots > 0 ? 'var(--ok)' : 'var(--muted)'};font-weight:600;">${v.snapshots || 0}</td>
+      <td>${v.dedup_skipped || 0}</td>
+      <td>${v.no_detection || 0}</td>
+      <td>${v.elapsed != null ? fmtDuration(v.elapsed) : '-'}</td>
+    </tr>`;
+  }).join('');
+  $('vid_tbody').innerHTML = rows;
+}
+
+async function refresh() {
+  // 合并轮询：一次 /api/status 拿到 tasks + progress + summary + agg
+  let j;
+  try {
+    const r = await fetch('/api/status'); j = await r.json();
+  } catch (e) {
+    // 网络/服务异常：保持上一次渲染，等待下次重试，避免页面"卡死变空白"
+    return;
+  }
+  _pollMs = j.running ? 3000 : 10000;
+  $('runbadge').textContent = j.running ? 'running' : 'idle';
+  $('runbadge').className = 'badge' + (j.running ? ' run' : '');
+  $('btnCancel').style.display = j.running ? '' : 'none';
+  $('btnKill').style.display = j.running ? '' : 'none';
+  if (j.running && j.elapsed != null) {
+    $('runelapsed').textContent = '⏱ 已运行 ' + fmtDuration(j.elapsed);
+  } else {
+    $('runelapsed').textContent = '';
+  }
+
+  // 有任务运行时，清除历史查看缓存，确保实时视图优先
+  if (j.running) {
+    _currentTaskId = null;
+    _historyAgg = null;
+    _historySummary = null;
+  }
+
+  // 正在查看某个历史任务：保持静态历史视图，不被轮询覆盖
+  const viewingHistory = _currentTaskId && !j.running && _historyAgg;
+
+  // 进度条 + 详细进度
+  try {
+    if (!viewingHistory) {
+      const p = j.progress || {};
+      const stageLabels = {scan:'扫描',video:'视频',extract:'抽帧',extract_done:'抽帧完成',
+                           detect:'识别中',detect_done:'识别完成',pose:'姿态识别',
+                           snapshot:'保存快照',done:'完成',error:'出错',idle:'空闲'};
+      const stage = p.stage || 'idle';
+      const label = stageLabels[stage] || stage;
+      let pct = 0;
+      if (stage === 'done') pct = 100;
+      else if (stage === 'idle' || stage === 'error') pct = 0;
+      else if (p.total > 0 && stage !== 'scan') pct = Math.round((p.current / p.total) * 100);
+      else if (stage === 'scan') pct = 10;
+      $('pbar_fill').style.width = pct + '%';
+      $('pbar_text').textContent = pct + '%';
+      let detailHtml = `<span class="stage-tag st-${stage}">${label}</span>` + (p.text || '');
+      if (stage === 'idle' && j.queue_size > 0) {
+        detailHtml = `<span class="stage-tag st-idle">⏳ 排队中</span> 队列中还有 ${j.queue_size} 个任务等待执行`;
+      }
+      $('stage_detail').innerHTML = detailHtml;
+      renderDetailProgress(p, j.running);
+    }
+  } catch (e) {}
+
+  // 总体统计条 + 视频明细表
+  try {
+    if (viewingHistory) {
+      renderOvStats(_historyAgg, true);
+      renderVidTable(_historySummary, true);
+    } else {
+      renderOvStats(j.agg, j.running);
+      renderVidTable(j.summary, j.running);
+    }
+  } catch (e) {}
+
+  // 任务历史表格：合并 SQLite 运行指标
+  try {
+    const rr = await fetch('/api/runs'); const rj = await rr.json();
+    const runs = {};
+    (rj.runs || []).forEach(r => runs[r.task_id] = r);
+    renderTaskTable(j.tasks, j.running, j.current, j.elapsed, runs);
+  } catch (e) {}
+
+  // 实时日志
+  let logId = null;
+  if (j.running && j.current) {
+    logId = j.current;
+  } else if (_currentTaskId) {
+    // 用户选中的历史任务优先（即使已超出内存任务列表，仍尝试从 SQLite/日志拉取）
+    logId = _currentTaskId;
+  } else if (j.tasks.length > 0) {
+    logId = j.tasks[j.tasks.length - 1].id;
+  }
+  if (logId) {
+    try {
+      if (logId !== _logTaskId) {
+        _logTaskId = logId;
+        _logOffset = 0;
+        $('log').textContent = '';
+      }
+      const logUrl = (_logOffset === 0)
+        ? '/api/task/' + logId + '?tail=65536'
+        : '/api/task/' + logId + '?offset=' + _logOffset;
+      const lr = await fetch(logUrl);
+      const lj = await lr.json();
+      const newText = lj.log || '';
+      const el = $('log');
+      if (newText) {
+        const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+        el.textContent += newText;
+        // 日志 DOM 超限则截断，防止长任务拖垮浏览器
+        if (el.textContent.length > _MAX_LOG_CHARS) {
+          el.textContent = '…(日志过长已截断早期内容)…\n' +
+            el.textContent.slice(el.textContent.length - _MAX_LOG_CHARS);
+          _logOffset = Math.max(_logOffset, lj.size - el.textContent.length);
+        }
+        if (atBottom) el.scrollTop = el.scrollHeight;
+      }
+      if (typeof lj.offset === 'number') _logOffset = lj.offset;
+    } catch (e) {}
+  }
+}
+
+function renderTaskTable(tasks, running, currentId, elapsed, runs) {
+  const tbody = $('task_tbody');
+  const reversed = tasks.slice().reverse();
+  const activeId = running ? currentId
+                  : (_currentTaskId && tasks.some(t => t.id === _currentTaskId)
+                     ? _currentTaskId
+                     : (tasks.length ? tasks[tasks.length - 1].id : null));
+  const statusLabels = {queued:'⏳ 排队', running:'▶ 运行中', done:'✓ 完成',
+                        failed:'✗ 失败', cancelled:'⏹ 已取消'};
+  tbody.innerHTML = reversed.map(t => {
+    const isActive = t.id === activeId ? 'active' : '';
+    const run = (runs || {})[t.id];
+    const statusText = statusLabels[t.status] || t.status;
+    const dur = run && run.total_elapsed != null
+      ? fmtDuration(run.total_elapsed)
+      : calcDuration(t, (running && t.id === currentId) ? elapsed : null);
+    const frames = run ? run.total_frames : '-';
+    const detected = run ? run.total_detected : '-';
+    const dedup = run ? run.total_dedup : '-';
+    const snaps = run ? run.total_snapshots : (t.outputs || []).length;
+    return `<tr class="${isActive}" onclick="selectTask('${t.id}')">
+      <td style="font-family:monospace;font-size:10px;">${t.id}</td>
+      <td><span class="status s-${t.status}">${statusText}</span></td>
+      <td style="font-size:10px;">${t.started || '-'}</td>
+      <td style="font-size:10px;">${t.finished || '-'}</td>
+      <td style="font-variant-numeric:tabular-nums;">${frames}</td>
+      <td style="font-variant-numeric:tabular-nums;">${detected}</td>
+      <td style="font-variant-numeric:tabular-nums;">${dedup}</td>
+      <td style="color:${snaps > 0 ? 'var(--ok)' : 'var(--muted)'};font-weight:600;">${snaps}</td>
+      <td style="font-size:10px;">${dur}</td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="9" style="color:var(--muted);text-align:center;padding:20px;">暂无任务</td></tr>';
+}
+
+function selectTask(id) {
+  _currentTaskId = id;
+  fetch('/api/tasks').then(r => r.json()).then(j => {
+    if (!j.running) {
+      loadTaskDetail(id);
+    }
+  });
+}
+
+// 点击历史任务：静态展示 SQLite 中记录的运行进度 + 逐视频明细 + 日志
+async function loadTaskDetail(id) {
+  try {
+    _logTaskId = id;
+    _logOffset = 0;
+    const r = await fetch('/api/task/' + id); const j = await r.json();
+    const rd = j.run_detail;
+    if (rd) {
+      // 进度条置为完成态（按最终状态着色）
+      const stageLabel = {done:'完成', failed:'失败', cancelled:'已取消',
+                          killed:'已杀死', timeout:'超时', running:'运行中',
+                          queued:'排队', error:'出错', idle:'空闲'};
+      const st = rd.status || 'done';
+      $('pbar_fill').style.width = '100%';
+      $('pbar_text').textContent = '100%';
+      $('stage_detail').innerHTML =
+        `<span class="stage-tag st-${st}">${stageLabel[st] || st}</span> ` +
+        `任务 ${id}`;
+      $('detail_progress').style.display = 'none';
+      // 聚合指标（task_runs 已记录）
+      _historyAgg = {
+        total_videos: rd.total_videos || 0,
+        processed_videos: rd.processed_videos || 0,
+        total_frames: rd.total_frames || 0,
+        total_detected: rd.total_detected || 0,
+        total_snapshots: rd.total_snapshots || 0,
+        total_dedup: rd.total_dedup || 0,
+        total_no_detection: rd.total_no_detection || 0,
+      };
+      _historySummary = rd.details || [];
+      renderOvStats(_historyAgg, true);
+      renderVidTable(_historySummary, true);
+    } else {
+      // 极旧任务无 SQLite 记录：仅展示日志
+      _historyAgg = null;
+      _historySummary = null;
+      $('pbar_fill').style.width = '0%';
+      $('pbar_text').textContent = '—';
+      $('stage_detail').textContent = '无详细进度记录（仅日志）';
+      $('detail_progress').style.display = 'none';
+      $('ov_stats').style.display = 'none';
+      $('vid_section').style.display = 'none';
+    }
+    // 日志
+    const txt = j.log || '(暂无日志)';
+    const el = $('log');
+    el.textContent = txt;
+    if (el.textContent.length > _MAX_LOG_CHARS) {
+      el.textContent = '…(日志过长已截断早期内容)…\n' +
+        el.textContent.slice(el.textContent.length - _MAX_LOG_CHARS);
+    }
+    el.scrollTop = el.scrollHeight;
+    if (typeof j.offset === 'number') _logOffset = j.offset;
+  } catch (e) {}
+}
+
+async function cancelRun() {
+  await fetch('/api/cancel', {method:'POST'});
+  $('btnCancel').style.display = 'none';
+  $('btnKill').style.display = 'none';
+  refresh();
+}
+
+async function killRun() {
+  if (!confirm('确定强制杀死当前任务？\n被杀死的任务标记为 killed，队列中的待运行任务也会被清空。')) return;
+  await fetch('/api/kill', {method:'POST'});
+  $('btnCancel').style.display = 'none';
+  $('btnKill').style.display = 'none';
+  refresh();
+}
+
+// 自调度轮询：根据 _pollMs 动态调整间隔（运行时3秒，空闲10秒）
+// 立即开始，不依赖任何配置请求，避免“页面打开是空白/不更新”。
+function scheduleRefresh() {
+  setTimeout(async () => {
+    try { await refresh(); } catch (e) {}
+    scheduleRefresh();
+  }, _pollMs);
+}
+refresh();
+scheduleRefresh();
+</script>
+</body>
+</html>

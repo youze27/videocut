@@ -19,7 +19,7 @@ from flask import (Flask, jsonify, render_template, request,
                     send_from_directory, send_file, abort, make_response)
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from src import config, main as vc_main, scanner
+from src import config, main as vc_main, scanner, db, utils
 
 app = Flask(__name__)
 # 强制禁用模板缓存，确保每次请求都从磁盘读取最新模板
@@ -32,7 +32,7 @@ app.jinja_env.auto_reload = True
 from .web_server import bp as dashboard_bp
 app.register_blueprint(dashboard_bp)
 
-WORK_DIR = Path(os.environ.get("WORK_DIR", "/work"))
+WORK_DIR = Path(os.environ.get("WORK_DIR", str(Path(__file__).parent / "work")))
 CONFIG_PATH = WORK_DIR / "config.json"
 TASKS_PATH = WORK_DIR / "tasks.json"
 LOGS_DIR = WORK_DIR / "logs"
@@ -46,7 +46,6 @@ DEFAULT_CONFIG = {
     "det_interval": config.DET_INTERVAL,
     "date_source": config.DATE_SOURCE,
     "camera_brand": config.CAMERA_BRAND,
-    "use_pose": config.USE_POSE,
     "similarity_threshold": config.SIMILARITY_THRESHOLD,
     # 扫描模式：smart（只扫当天+处理最近N小时）/ latest（最近N个）/ hours / date
     "scan_mode": "smart",
@@ -59,11 +58,6 @@ DEFAULT_CONFIG = {
     # 定时检测：按间隔小时数自动运行，默认启用，每 1 小时运行一次
     "schedule_enabled": True,
     "schedule_interval_hours": 1,
-    # Watch the input folder and auto-run when new/changed videos appear.
-    # 默认启用：服务/容器启动即进入自动运行状态，无需人为操作。
-    "watch_enabled": True,
-    # watch 自动运行间隔（分钟），默认 1 小时
-    "watch_interval": 60,
     # 多线程检测：auto 自动按 CPU 核心数，或用户指定整数。
     "worker_threads": "auto",
     # 临时帧保留天数：超过自动删除（已输出快照不删）。0=不清理。默认 30 天
@@ -74,26 +68,31 @@ DEFAULT_CONFIG = {
     # 网格截图：后端 PIL 拼接当天全部快照（5 列、最多 100 张、按时间正序）。
     "grid_cols": config.GRID_COLS,
     "grid_rows": config.GRID_ROWS,
+    # 网格压缩图（另存 KB 级版本，供轻量传输/外部接口）
+    "grid_compress": config.GRID_COMPRESS,
+    "grid_max_width": config.GRID_MAX_WIDTH,
+    "grid_target_kb": config.GRID_TARGET_KB,
+    "grid_compress_min_q": config.GRID_COMPRESS_MIN_Q,
     # 任务最长运行时间（小时），超过自动杀死。0=不限制。默认 24 小时
     "max_task_hours": 24,
 }
 
 # 任务状态：generation 用于让被杀死的旧 worker 失效，防止它结束后又改 state。
 # force_kill: 硬杀死标志；task_start: 当前任务开始时间戳。
+# agg: 全任务聚合统计（随 video_done 递增），供前端显示总体进度。
 state = {"running": False, "current": None, "cancel": False,
          "force_kill": False, "task_start": None, "generation": 0,
          "progress": {"stage": "idle", "text": "空闲", "current": 0, "total": 0},
-         "summary": []}
+         "summary": [],
+         "agg": {"total_videos": 0, "processed_videos": 0, "skipped": 0,
+                 "total_frames": 0, "total_detected": 0, "total_snapshots": 0,
+                 "total_dedup": 0, "total_no_detection": 0}}
 sched = BackgroundScheduler()
 
 # 任务队列：防止多个检测任务并发或丢失。do_run 从队列取出依次执行。
 _task_queue = queue.Queue()
 _queue_lock = threading.Lock()
 _queue_thread = None
-
-# Tracks which video files were already seen by the watcher so it only fires
-# when something is genuinely new/changed.
-_watch_state = {"seen": set(), "primed": False}
 
 
 # ---------- persistence ----------
@@ -102,6 +101,9 @@ def load_config():
     if CONFIG_PATH.exists():
         try:
             data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            # 剥离旧版配置键：USE_POSE 已废弃，双模型切换取消
+            for _legacy in ("use_pose", "pet_conf"):
+                data.pop(_legacy, None)
             return {**DEFAULT_CONFIG, **data}
         except Exception:
             pass
@@ -109,8 +111,9 @@ def load_config():
 
 
 def save_config(cfg):
-    CONFIG_PATH.write_text(json.dumps(cfg, indent=2, ensure_ascii=False),
-                           encoding="utf-8")
+    utils.atomic_write_text(CONFIG_PATH,
+                            json.dumps(cfg, indent=2, ensure_ascii=False),
+                            encoding="utf-8")
 
 
 def _apply_config_to_module(data):
@@ -141,6 +144,27 @@ def _apply_config_to_module(data):
                 setattr(config, k.upper(), max(1, int(data[k])))
             except (ValueError, TypeError):
                 pass
+    # 网格压缩相关开关（同步到 config 模块，生成压缩图时读取）
+    if "grid_compress" in data:
+        try:
+            config.GRID_COMPRESS = bool(int(data["grid_compress"]))
+        except (ValueError, TypeError):
+            pass
+    if "grid_max_width" in data:
+        try:
+            config.GRID_MAX_WIDTH = max(160, int(data["grid_max_width"]))
+        except (ValueError, TypeError):
+            pass
+    if "grid_target_kb" in data:
+        try:
+            config.GRID_TARGET_KB = max(10, int(data["grid_target_kb"]))
+        except (ValueError, TypeError):
+            pass
+    if "grid_compress_min_q" in data:
+        try:
+            config.GRID_COMPRESS_MIN_Q = max(20, min(95, int(data["grid_compress_min_q"])))
+        except (ValueError, TypeError):
+            pass
     if "scan_mode" in data:
         config.SCAN_MODE = str(data["scan_mode"])
     if "scan_today_only" in data:
@@ -167,8 +191,13 @@ def load_tasks():
 
 
 def save_tasks(tasks):
-    TASKS_PATH.write_text(json.dumps(tasks, indent=2, ensure_ascii=False),
-                          encoding="utf-8")
+    try:
+        utils.atomic_write_text(TASKS_PATH,
+                                json.dumps(tasks, indent=2, ensure_ascii=False),
+                                encoding="utf-8")
+    except (PermissionError, OSError) as e:
+        # 写入失败不能让调用方崩溃，否则会导致队列 worker 线程死亡、任务卡死
+        print(f"[save_tasks] failed to persist tasks.json: {e}")
 
 
 cfg = load_config()
@@ -206,6 +235,10 @@ def do_run(task_id, run_cfg):
     state["task_start"] = time.time()
     state["progress"] = {"stage": "scan", "text": "启动中...", "current": 0, "total": 0}
     state["summary"] = []
+    state["agg"] = {"total_videos": 0, "processed_videos": 0, "skipped": 0,
+                    "total_frames": 0, "total_detected": 0,
+                    "total_snapshots": 0, "total_dedup": 0,
+                    "total_no_detection": 0}
     log_path = LOGS_DIR / f"{task_id}.log"
     started = datetime.now().isoformat(sep=" ")
     update_task(task_id, status="running", started=started,
@@ -220,14 +253,34 @@ def do_run(task_id, run_cfg):
         # 被杀死后不再接收进度，避免覆盖新任务的状态
         if not _is_active():
             return
-        state["progress"] = {"stage": info.get("stage", ""),
+        stage = info.get("stage", "")
+        state["progress"] = {"stage": stage,
                              "text": info.get("text", ""),
                              "current": info.get("current", 0),
                              "total": info.get("total", 0),
                              "extra": info.get("extra")}
-        # video_done 阶段收集每个视频的处理摘要
-        if info.get("stage") == "video_done" and info.get("extra"):
-            state["summary"].append(info["extra"])
+        # scan 阶段带出本任务待处理视频总数
+        if stage == "scan" and info.get("total"):
+            state["agg"]["total_videos"] = int(info["total"])
+        # video_done 阶段：收集每个视频的处理摘要并聚合全任务统计
+        if stage == "video_done" and info.get("extra"):
+            extra = info["extra"]
+            state["summary"].append(extra)
+            agg = state["agg"]
+            if extra.get("skipped"):
+                agg["skipped"] += 1
+            else:
+                agg["processed_videos"] += 1
+                agg["total_frames"] += extra.get("frames_extracted", 0)
+                agg["total_detected"] += extra.get("frames_detected", 0)
+                agg["total_snapshots"] += extra.get("snapshots", 0)
+                agg["total_dedup"] += extra.get("dedup_skipped", 0)
+                agg["total_no_detection"] += extra.get("no_detection", 0)
+            # 持久化单个视频明细（SQLite，供历史统计）
+            try:
+                db.add_video_run(task_id, extra)
+            except Exception as e:
+                print(f"[ui] db.add_video_run failed: {e}")
 
     status = "done"
     try:
@@ -252,7 +305,6 @@ def do_run(task_id, run_cfg):
                 det_interval=float(run_cfg["det_interval"]),
                 date_source=run_cfg["date_source"],
                 camera_brand=run_cfg.get("camera_brand", "auto"),
-                use_pose=run_cfg["use_pose"],
                 cancel_flag=state,
                 progress_cb=_progress_cb,
                 worker_threads=run_cfg.get("worker_threads", "auto"),
@@ -273,9 +325,9 @@ def do_run(task_id, run_cfg):
     # 仅当此 worker 仍活跃时才更新任务记录与全局状态；
     # 已被杀死/超时（generation 变化）的 worker 不再改写 state，避免 resurrect。
     if _is_active():
-        update_task(task_id, status=status,
-                    finished=datetime.now().isoformat(sep=" "),
-                    outputs=outputs)
+        finished_at = datetime.now().isoformat(sep=" ")
+        elapsed_total = round(time.time() - (state.get("task_start") or time.time()), 1)
+        update_task(task_id, status=status, finished=finished_at, outputs=outputs)
         state["running"] = False
         state["current"] = None
         state["cancel"] = False
@@ -283,26 +335,61 @@ def do_run(task_id, run_cfg):
         state["task_start"] = None
         if status == "done":
             state["progress"] = {"stage": "done", "text": "已完成", "current": 0, "total": 0}
+        # 持久化本任务运行汇总到 SQLite（含聚合指标与逐视频明细）
+        try:
+            db.save_task_run(
+                task_id=task_id,
+                started=started,
+                finished=finished_at,
+                status=status,
+                total_videos=state["agg"].get("total_videos", 0),
+                processed_videos=state["agg"].get("processed_videos", 0),
+                total_frames=state["agg"].get("total_frames", 0),
+                total_detected=state["agg"].get("total_detected", 0),
+                total_snapshots=state["agg"].get("total_snapshots", 0),
+                total_dedup=state["agg"].get("total_dedup", 0),
+                total_no_detection=state["agg"].get("total_no_detection", 0),
+                total_elapsed=elapsed_total,
+                details=json.dumps(state["summary"], ensure_ascii=False),
+            )
+        except Exception as e:
+            print(f"[ui] save task_run failed: {e}")
     else:
         # 被取代：只补 outputs（若仍活跃），不触碰 state
         update_task(task_id, outputs=outputs)
 
 
 def _queue_worker():
-    """后台队列消费线程：依次从队列取出任务执行，防止并发与丢失。"""
+    """后台队列消费线程：依次从队列取出任务执行，防止并发与丢失。
+
+    线程永不退出：即使 do_run 或状态更新抛异常，也必须吞掉并继续下一个任务，
+    否则队列会永久卡死、后续任务无法执行。
+    """
     while True:
-        task_id, run_cfg = _task_queue.get()
         try:
-            # 标记为 queued→running 由 do_run 处理
-            do_run(task_id, run_cfg)
+            task_id, run_cfg = _task_queue.get()
+            try:
+                do_run(task_id, run_cfg)
+            except Exception as e:
+                print(f"[queue] task {task_id} crashed: {e}")
+                try:
+                    update_task(task_id, status="failed",
+                                finished=datetime.now().isoformat(sep=" "))
+                except Exception:
+                    pass
+                try:
+                    state["running"] = False
+                    state["current"] = None
+                except Exception:
+                    pass
         except Exception as e:
-            print(f"[queue] task {task_id} crashed: {e}")
-            update_task(task_id, status="failed",
-                        finished=datetime.now().isoformat(sep=" "))
-            state["running"] = False
-            state["current"] = None
+            # _task_queue.get() 或 task_done() 极端异常，不能让线程死掉
+            print(f"[queue] worker outer error: {e}")
         finally:
-            _task_queue.task_done()
+            try:
+                _task_queue.task_done()
+            except Exception:
+                pass
 
 
 def _force_kill_task(reason="killed"):
@@ -370,7 +457,8 @@ def _watchdog():
 def _cleanup_zombie_tasks():
     """服务启动时把 tasks.json 中残留的 running/queued 任务标记为 failed。
 
-    容器重启意味着这些任务已死，但记录里仍是 running 状态，导致前端一直显示运行中。
+    容器重启意味着这些任务已死，但记录里仍是 running/queued 状态，导致前端一直显示运行中。
+    同时清空内存队列，避免重启前入队的任务被新 worker 取出执行（配置已变，可能无意义）。
     """
     now = datetime.now().isoformat(sep=" ")
     changed = False
@@ -383,6 +471,17 @@ def _cleanup_zombie_tasks():
             print(f"[startup] marked zombie task {t['id']} as failed")
     if changed:
         save_tasks(tasks)
+    # 清空内存队列，防止重启前入队的任务被执行
+    cleared = 0
+    while True:
+        try:
+            _task_queue.get_nowait()
+            _task_queue.task_done()
+            cleared += 1
+        except queue.Empty:
+            break
+    if cleared:
+        print(f"[startup] cleared {cleared} stale queued task(s) from memory queue")
 
 
 def start_run(run_cfg=None):
@@ -423,44 +522,72 @@ def update_task(task_id, **fields):
 
 def reschedule():
     sched.remove_all_jobs()
+    # 打印有效配置，便于排查“定时任务没跑”——如果这里显示 False，说明
+    # /work/config.json（NAS 挂载卷）里把对应开关关掉了。
+    print(f"[sched] effective: schedule_enabled={cfg.get('schedule_enabled')} "
+          f"cleanup_enabled={cfg.get('cleanup_enabled')} "
+          f"schedule_interval_hours={cfg.get('schedule_interval_hours')}")
+    # misfire_grace_time：触发时刻过后多久内仍允许补执行。APScheduler 默认仅 1 秒，
+    # 系统休眠唤醒 / 检测任务跑满 CPU 时，触发极易迟到超过 1 秒 → 本次被静默丢弃。
+    # 放大到 24h：醒来或闲下来后能补跑一次（coalesce 会把多次错过合并为一次）。
+    MISFIRE = 24 * 3600
+
+    def _num(raw, default, lo=None):
+        """健壮地把配置值解析成数字，空字符串/非法值回退 default，避免静默丢弃任务。"""
+        try:
+            v = float(raw)
+        except (ValueError, TypeError):
+            return default
+        if lo is not None and v < lo:
+            return default
+        return v
+
     # 定时检测：按间隔小时数自动运行（如每 2 小时运行一次）
     if cfg.get("schedule_enabled"):
         try:
-            hours = float(cfg.get("schedule_interval_hours", 2))
+            hours = _num(cfg.get("schedule_interval_hours", 1), 1, lo=0.1)
             if hours <= 0:
-                hours = 2
-            sched.add_job(lambda: start_run(cfg), "interval",
-                          hours=hours, id="scheduled")
-            print(f"[sched] 定时检测已启用：每 {hours} 小时运行一次")
+                hours = 1
+
+            def _scheduled_run():
+                tid = start_run(cfg)
+                if tid:
+                    print(f"[sched] 定时检测触发（间隔 {hours}h），已提交任务 {tid}",
+                          flush=True)
+                else:
+                    print("[sched] 定时检测触发，但任务队列已满（>=5），本次跳过",
+                          flush=True)
+
+            sched.add_job(_scheduled_run, "interval", hours=hours,
+                          id="scheduled", misfire_grace_time=MISFIRE)
+            print(f"[sched] 定时检测已启用：每 {hours} 小时运行一次 "
+                  f"(misfire_grace={MISFIRE}s)", flush=True)
         except Exception as e:
             print("schedule error:", e)
-    if cfg.get("watch_enabled"):
-        try:
-            iv = max(1, int(cfg.get("watch_interval", 5)))
-            sched.add_job(auto_check, "interval", minutes=iv, id="watch")
-            # Reset priming so the next tick re-baselines the seen set.
-            _watch_state["primed"] = False
-        except Exception as e:
-            print("watch schedule error:", e)
     # 每日自动清理过期帧（独立于检测任务）
     if cfg.get("cleanup_enabled", True):
         try:
-            ct = str(cfg.get("cleanup_time", "04:00") or "04:00")
+            # 读 cleanup_time（时间字符串）；空字符串/非法值回退 04:00，避免静默丢弃。
+            ct = str(cfg.get("cleanup_time", "04:00") or "04:00").strip()
             parts = ct.split(":")
             if len(parts) != 2:
                 ct = "04:00"
                 parts = ["04", "00"]
-            hh, mm = parts
+            hh, mm = int(parts[0]), int(parts[1])
             sched.add_job(daily_cleanup, "cron",
-                          hour=int(hh), minute=int(mm), id="cleanup")
-            print(f"[sched] daily cleanup scheduled at {ct}")
+                          hour=hh, minute=mm, id="cleanup",
+                          misfire_grace_time=MISFIRE)
+            print(f"[sched] daily cleanup scheduled at {ct} "
+                  f"(misfire_grace={MISFIRE}s)", flush=True)
         except Exception as e:
             print("cleanup schedule error:", e)
     # 每日凌晨 00:30 拼接前一天的裁剪片段为长视频
     try:
         sched.add_job(daily_concat, "cron",
-                      hour=0, minute=30, id="daily_concat")
-        print("[sched] daily clip concat scheduled at 00:30")
+                      hour=0, minute=30, id="daily_concat",
+                      misfire_grace_time=MISFIRE)
+        print("[sched] daily clip concat scheduled at 00:30 "
+              f"(misfire_grace={MISFIRE}s)", flush=True)
     except Exception as e:
         print("concat schedule error:", e)
 
@@ -489,32 +616,6 @@ def daily_concat():
         print(f"[concat] ERROR: {e}")
 
 
-def auto_check():
-    """Watcher tick: if the set of video files in the input folder changed
-    since the last tick, auto-run the pipeline."""
-    try:
-        # 汇总所有输入源的视频
-        all_vids = []
-        for src in cfg.get("input_sources", []):
-            all_vids.extend(scanner.list_all_videos(
-                src["path"], brand=src.get("brand", "auto")))
-        vids = all_vids
-    except Exception as e:
-        print("watch error:", e)
-        return
-    keys = {v["path"] for v in vids}
-    if not _watch_state["primed"]:
-        _watch_state["seen"] = keys
-        _watch_state["primed"] = True
-        return
-    if keys != _watch_state["seen"]:
-        if not state["running"]:
-            _watch_state["seen"] = keys
-            print("[watch] input changed, auto-running pipeline")
-            start_run(cfg)
-        # 运行中：保持 seen 不变，留待下个 tick 检测，避免吞掉运行期间落盘的新文件
-
-
 # ---------- routes ----------
 
 @app.route("/")
@@ -530,10 +631,22 @@ def index():
 
 @app.route("/config")
 def config_page():
-    return render_template("index.html",
-                           cfg=cfg, tasks=tasks,
-                           previews=list_outputs(cfg["output_dir"]),
-                           running=state["running"])
+    # 配置页：仅配置表单，运行进度/日志/历史移到独立的 /tasks 页。
+    resp = make_response(render_template("config.html"))
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
+
+
+@app.route("/tasks")
+def tasks_page():
+    # 任务页：运行进度 + 实时日志 + 任务历史（从 /config 拆出，避免被长表单遮挡）。
+    resp = make_response(render_template("tasks.html"))
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
 
 
 @app.route("/api/config", methods=["GET"])
@@ -624,15 +737,104 @@ def api_summary():
     return jsonify({"summary": state["summary"], "running": state["running"]})
 
 
+@app.route("/api/status", methods=["GET"])
+def api_status():
+    """合并运行状态：tasks + progress + summary + 聚合统计。
+    前端一次轮询即可拿到全部进度信息，减少请求数、降低开销。"""
+    elapsed = None
+    if state["running"] and state.get("task_start"):
+        elapsed = round(time.time() - state["task_start"], 0)
+    return jsonify({
+        "tasks": tasks,
+        "running": state["running"],
+        "current": state["current"],
+        "queue_size": _task_queue.qsize(),
+        "elapsed": elapsed,
+        "progress": state["progress"],
+        "summary": state["summary"],
+        "agg": state["agg"],
+    })
+
+
+@app.route("/api/runs", methods=["GET"])
+def api_runs():
+    """最近任务运行汇总（来自 SQLite），供历史统计与详情展示。
+
+    列表场景不返回 details（逐视频明细可能很大），仅保留概览聚合指标，
+    显著降低传输体积；明细仅在需要时用 load_task_run 单独取。"""
+    return jsonify({"runs": db.load_recent_runs(limit=50, include_details=False)})
+
+
 @app.route("/api/task/<task_id>", methods=["GET"])
 def api_task(task_id):
     tk = next((t for t in tasks if t["id"] == task_id), None)
     log = ""
+    offset = 0
+    full_size = 0
     if tk and tk.get("log"):
         lp = LOGS_DIR / tk["log"]
         if lp.exists():
-            log = lp.read_text(encoding="utf-8", errors="replace")
-    return jsonify({"task": tk, "log": log})
+            # 增量读取：前端传 ?offset=N 时只返回 N 之后的新增日志，
+            # 避免长任务日志（可能几十 MB）每次轮询全量传输。
+            try:
+                full_size = lp.stat().st_size
+            except OSError:
+                full_size = 0
+            try:
+                req_offset = int(request.args.get("offset", 0) or 0)
+            except (ValueError, TypeError):
+                req_offset = 0
+            # 首屏/切换任务：传 ?tail=N 只返回末尾 N 字节（默认 64KB），
+            # 避免把几十年的大日志一次性灌进前端 DOM 导致浏览器卡死。
+            try:
+                tail = int(request.args.get("tail", 0) or 0)
+            except (ValueError, TypeError):
+                tail = 0
+            if tail > 0:
+                start = max(0, full_size - tail)
+                with open(lp, "rb") as bf:
+                    bf.seek(start)
+                    chunk = bf.read()
+                log = chunk.decode("utf-8", errors="replace")
+                # 跳过首个可能的残行，从完整行开始
+                if log and log[0] != "\n" and "\n" in log:
+                    log = log[log.find("\n") + 1:]
+                offset = full_size
+            elif req_offset > 0 and req_offset < full_size:
+                with open(lp, "rb") as bf:
+                    bf.seek(req_offset)
+                    # 按字节截断到下一个换行，避免截断出半个字符
+                    chunk = bf.read()
+                # 解码容错，确保不出现半个多字节字符
+                log = chunk.decode("utf-8", errors="replace")
+                # 跳过首个可能的残行，从完整行开始
+                if log and log[0] != "\n" and "\n" in log:
+                    log = log[log.find("\n") + 1:]
+                offset = req_offset + len(chunk)
+            elif req_offset >= full_size:
+                # 已读到末尾：无新增，保持 offset 在末尾，避免回退到全量
+                log = ""
+                offset = full_size
+            else:
+                # offset=0 且无 tail：仍限制首屏体量，最多取末尾 64KB，
+                # 防止一次性全量返回冻结前端。
+                start = max(0, full_size - 65536)
+                with open(lp, "rb") as bf:
+                    bf.seek(start)
+                    chunk = bf.read()
+                log = chunk.decode("utf-8", errors="replace")
+                if log and log[0] != "\n" and "\n" in log:
+                    log = log[log.find("\n") + 1:]
+                offset = full_size
+    # 附带 SQLite 中记录的历史运行明细（聚合指标 + 逐视频 summary），
+    # 供前端点击历史任务时静态展示详细进度。无记录则为 None。
+    run_detail = None
+    try:
+        run_detail = db.load_task_run(task_id, include_details=True)
+    except Exception as e:
+        print(f"[api_task] load_task_run failed: {e}")
+    return jsonify({"task": tk, "log": log, "offset": offset,
+                    "size": full_size, "run_detail": run_detail})
 
 
 @app.route("/api/browse")
@@ -692,11 +894,56 @@ def preview(filename):
 
 @app.route("/api/grid_latest")
 def api_grid_latest():
-    """返回最新的网格截图。检测完成后自动生成，固定 URL 供外部访问。"""
+    """返回最新的网格截图（原始高质量版）。检测完成后自动生成，固定 URL 供外部访问。"""
     grid_path = Path(cfg["output_dir"]) / "grid_latest.jpg"
     if not grid_path.exists():
         abort(404)
     resp = send_file(str(grid_path), mimetype="image/jpeg")
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return resp
+
+
+@app.route("/api/grid_compressed")
+def api_grid_compressed():
+    """返回 KB 级压缩版网格截图（轻量传输用）。
+
+    优先返回已生成的 grid_latest_compressed.jpg；
+    若不存在或比原图旧，则实时用配置参数（grid_max_width / grid_target_kb /
+    grid_compress_min_q）从 grid_latest.jpg 压缩生成并缓存，再返回。
+    无原图时 404。
+    """
+    grid_path = Path(cfg["output_dir"]) / "grid_latest.jpg"
+    comp_path = Path(cfg["output_dir"]) / "grid_latest_compressed.jpg"
+    if not grid_path.exists():
+        abort(404)
+    # 需要（重新）生成压缩图的条件：不存在 / 比原图旧 / 压缩被禁用后残留
+    need = False
+    if not comp_path.exists():
+        need = True
+    else:
+        try:
+            if grid_path.stat().st_mtime > comp_path.stat().st_mtime:
+                need = True
+        except OSError:
+            need = True
+    if need:
+        try:
+            from PIL import Image
+            im = Image.open(grid_path).convert("RGB")
+            data, q = utils.compress_jpeg_to_bytes(
+                im,
+                max_width=int(cfg.get("grid_max_width", config.GRID_MAX_WIDTH)),
+                target_bytes=int(cfg.get("grid_target_kb", config.GRID_TARGET_KB)) * 1024,
+                min_quality=int(cfg.get("grid_compress_min_q", config.GRID_COMPRESS_MIN_Q)),
+            )
+            utils.atomic_write_bytes(comp_path, data)
+            print(f"[grid] compressed copy (re)generated on demand: "
+                  f"{len(data)/1024:.1f}KB, quality={q}")
+        except Exception as e:
+            print(f"[grid] on-demand compress failed: {e}")
+    if not comp_path.exists():
+        abort(404)
+    resp = send_file(str(comp_path), mimetype="image/jpeg")
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return resp
 
@@ -715,7 +962,17 @@ def api_grid_upload():
     out_dir = Path(cfg["output_dir"])
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "grid_latest.jpg"
-    f.save(str(out_path))
+    # 原子写入：先存临时文件再 os.replace，避免写一半留下损坏图片
+    tmp = out_path.with_name(out_path.name + ".tmp")
+    f.save(str(tmp))
+    try:
+        os.replace(tmp, out_path)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
     st = out_path.stat()
     print(f"[grid] uploaded screenshot to {out_path} ({st.st_size/1024:.1f}KB)")
     return jsonify({
@@ -729,41 +986,40 @@ def api_grid_upload():
 
 @app.route("/api/grid_info")
 def api_grid_info():
-    """返回网格截图的配置和状态信息。"""
+    """返回网格截图的配置和状态信息（含压缩版）。"""
     grid_path = Path(cfg["output_dir"]) / "grid_latest.jpg"
+    comp_path = Path(cfg["output_dir"]) / "grid_latest_compressed.jpg"
     exists = grid_path.exists()
     info = {
         "exists": exists,
         "url": "/api/grid_latest",
+        "compressed_url": "/api/grid_compressed",
         "cols": config.GRID_COLS,
         "rows": config.GRID_ROWS,
         "total_cells": config.GRID_COLS * config.GRID_ROWS,
+        "grid_compress": bool(cfg.get("grid_compress", config.GRID_COMPRESS)),
+        "grid_max_width": int(cfg.get("grid_max_width", config.GRID_MAX_WIDTH)),
+        "grid_target_kb": int(cfg.get("grid_target_kb", config.GRID_TARGET_KB)),
+        "grid_compress_min_q": int(cfg.get("grid_compress_min_q", config.GRID_COMPRESS_MIN_Q)),
     }
     if exists:
         st = grid_path.stat()
         info["size_kb"] = round(st.st_size / 1024, 1)
         info["updated"] = datetime.fromtimestamp(st.st_mtime).strftime(
             "%Y-%m-%d %H:%M:%S")
+    if comp_path.exists():
+        cst = comp_path.stat()
+        info["compressed_size_kb"] = round(cst.st_size / 1024, 1)
+        info["compressed_updated"] = datetime.fromtimestamp(cst.st_mtime).strftime(
+            "%Y-%m-%d %H:%M:%S")
     return jsonify(info)
 
 
-# ---------- 无对象视频管理 ----------
-
-NO_OBJ_PATH = WORK_DIR / "no_object_videos.json"
+# ---------- 无对象视频管理（SQLite，src/db.py） ----------
 
 
 def load_no_obj():
-    if NO_OBJ_PATH.exists():
-        try:
-            return json.loads(NO_OBJ_PATH.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return []
-
-
-def save_no_obj(data):
-    NO_OBJ_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False),
-                           encoding="utf-8")
+    return db.load_no_obj()
 
 
 @app.route("/api/no_object_videos", methods=["GET"])
@@ -803,8 +1059,7 @@ def api_no_obj_delete():
         except Exception as e:
             errors.append(str(e))
     # 从记录中移除已删除的
-    remaining = [v for v in load_no_obj() if v["path"] not in paths]
-    save_no_obj(remaining)
+    db.remove_no_obj_many(paths)
     msg = f"已删除 {deleted} 个视频"
     if errors:
         msg += f"，{len(errors)} 个失败"
@@ -853,7 +1108,7 @@ threading.Thread(target=_watchdog, daemon=True).start()
 
 def _startup_autorun():
     """服务/容器启动后自动触发首次扫描，实现"启动即运行、全自动化"。
-    延迟 3 秒让 HTTP 服务先就绪；watch 模式负责后续的持续自动化。"""
+    延迟 3 秒让 HTTP 服务先就绪；定时检测负责后续的持续自动化。"""
     try:
         time.sleep(3)
         tid = start_run(cfg)

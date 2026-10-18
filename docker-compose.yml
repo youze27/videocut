@@ -5,15 +5,20 @@ services:
     restart: unless-stopped
     ports:
       - "8080:8080"
-    # Mount the NAS video folder. Inside the container it appears as /host,
-    # so in the UI set input = /host and output = /host/output (subfolder).
-    # Adjust the left side to your real path if different.
+    # ── NAS 视频目录挂载 ─────────────────────────────────────────────
+    # 左侧改成你自己的 NAS 路径（群晖 / 威联通 / 绿联等路径不同）。
+    # 右侧 /host 是容器内固定路径：UI 里输入目录填 /host 或其子目录。
+    # 例：
+    #   群晖    /volume1/camera_videos:/host
+    #   威联通  /volume1/camera_videos:/host
+    #   绿联    /vol1/1000/camera_videos:/host
+    # /work 存放抽帧临时文件与数据库，必须与视频目录同盘（同一文件系统），
+    # 否则 -ss 精确定位会退化为全量解码，耗时成倍上升。
     volumes:
-      - /vol2/1000/video_back:/host
-      - /vol2/1000/video_back/.videocut_work:/work
-      # Mount local source so fixes (e.g. the stitch.py / config bugs) take
-      # effect without rebuilding the image. Remove these two lines if you
-      # prefer the image-baked code (then `docker compose build` instead).
+      - /volume1/camera_videos:/host
+      - /volume1/camera_videos/.videocut_work:/work
+      # 挂载本地源码，改代码无需重建镜像（热修便利）。
+      # 若希望使用镜像内烘焙的代码，删掉这两行后执行 docker compose build。
       - ./src:/app/src
       - ./ui:/app/ui
     environment:

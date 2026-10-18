@@ -2,13 +2,11 @@
 cropped 3:2 JPG snapshot (with pose label) for each detected event.
 
 本项目不再生成合并视频或拼图。每个检测到人/猫/狗的片段会输出一张围绕
-检测框裁剪的 JPG 快照，并在 SNAPSHOTS_DIR/index.json 中记录源视频路径
-与起始时间，大屏点击图片时直接跳转到源视频的对应位置播放。"""
+检测框裁剪的 JPG 快照，并在 SQLite（src/db.py）中记录源视频路径与起始
+时间，大屏点击图片时直接跳转到源视频的对应位置播放。"""
 import argparse
 import hashlib
-import json
 import os
-import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -24,52 +22,8 @@ from .extract import extract_frames, extract_frames_at_times
 from . import detect
 from . import dedup
 from . import utils
+from . import db
 from .detect import draw_skeleton
-
-# index.json 读改写专用锁，避免多线程并发写入丢数据
-_index_lock = threading.Lock()
-
-
-def _processed_path():
-    return Path(config.WORK_DIR) / "processed.json"
-
-
-def _no_obj_path():
-    return Path(config.WORK_DIR) / "no_object_videos.json"
-
-
-def load_no_obj():
-    p = _no_obj_path()
-    if p.exists():
-        try:
-            return json.loads(p.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return []
-
-
-def save_no_obj(data):
-    p = _no_obj_path()
-    p.write_text(json.dumps(data, indent=2, ensure_ascii=False),
-                 encoding="utf-8")
-
-
-def load_processed():
-    """已处理视频记录：{key: iso_timestamp}。key = path|size|mtime 保证文件
-    被替换后能重新处理。"""
-    p = _processed_path()
-    if p.exists():
-        try:
-            return json.loads(p.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return {}
-
-
-def save_processed(proc):
-    p = _processed_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(proc, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def _processed_key(path):
@@ -83,27 +37,6 @@ def _vid_uid(vid_path):
     避免多摄像头同名视频的帧目录互删。"""
     h = hashlib.md5(str(Path(vid_path).resolve()).encode()).hexdigest()[:8]
     return f"{Path(vid_path).stem}_{h}"
-
-
-def _events_index_path():
-    return Path(config.SNAPSHOTS_DIR) / "index.json"
-
-
-def _record_event(base, meta):
-    """把每张事件 JPG 对应的源视频信息写入 index.json，供大屏跳转播放。"""
-    p = _events_index_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    # 加锁避免多线程并发读改写导致事件条目丢失
-    with _index_lock:
-        index = {}
-        if p.exists():
-            try:
-                index = json.loads(p.read_text(encoding="utf-8"))
-            except Exception:
-                pass
-        index[base] = meta
-        p.write_text(json.dumps(index, indent=2, ensure_ascii=False),
-                     encoding="utf-8")
 
 
 def _resolve_worker_threads():
@@ -192,9 +125,11 @@ def _process_one_video(vid, vid_idx, vid_total, work_dir, processed, dfilter,
         dur = utils.video_duration(vid)
     except Exception:
         dur = 0
-    # 常规抽帧：严格按用户设置的 DET_INTERVAL，不做动态调整
+    # 抽帧：默认关键帧快速抽帧；interval 仅作为回退/去重窗口用
     interval = config.DET_INTERVAL
-    expected_frames = int(dur / interval) if dur > 0 else 0
+    expected_frames = extract.count_keyframes(vid) if dur > 0 else 0
+    if not expected_frames and dur > 0:
+        expected_frames = int(dur / interval)
 
     # ===== 阶段1：开始处理视频 =====
     _progress("video", f"处理第 {vid_idx}/{vid_total} 个视频: {vid.name}",
@@ -207,14 +142,25 @@ def _process_one_video(vid, vid_idx, vid_total, work_dir, processed, dfilter,
     print(f"[main]   duration={dur:.1f}s, interval={interval:.1f}s, "
           f"expected_frames~{expected_frames}, date={vdt}")
 
-    # ===== 阶段2：抽帧 =====
-    _progress("extract", f"抽帧中: {vid.name}（预计 ~{expected_frames} 帧）",
+    # ===== 阶段2：抽帧（extract_frames 内部每 ~1s 上报已抽帧数，实时刷新进度）=====
+    _progress("extract", f"抽帧中: {vid.name}（0/{expected_frames} 帧）",
               0, max(expected_frames, 1), extra={
                   "video": vid.name, "phase": "extracting",
                   "duration": round(dur, 1), "interval": interval,
               })
-    frames = extract.extract_frames(vid, interval_sec=interval,
-                                    out_dir=work_dir / "frames" / _vid_uid(vid))
+
+    def _extract_progress(current):
+        # 抽帧进行中：实时更新 current，前端进度条/文字同步走动
+        _progress("extract", f"抽帧中: {vid.name}（{current}/{expected_frames} 帧）",
+                  current, max(expected_frames, 1), extra={
+                      "video": vid.name, "phase": "extracting",
+                      "duration": round(dur, 1), "interval": interval,
+                      "frames_extracted": current,
+                  })
+
+    frames, frame_times = extract.extract_frames(vid, interval_sec=interval,
+                                                 out_dir=work_dir / "frames" / _vid_uid(vid),
+                                                 progress_cb=_extract_progress)
     if not frames:
         print(f"[main]   WARNING: no frames extracted, skipping")
         _progress("video_done", f"抽帧失败: {vid.name}", vid_idx, vid_total, extra={
@@ -238,9 +184,7 @@ def _process_one_video(vid, vid_idx, vid_total, work_dir, processed, dfilter,
                   "frames_extracted": len(frames),
               })
     dets = detect.detect_objects([str(f) for f in frames],
-                                 person_conf=config.DET_CONF,
-                                 pet_conf=config.PET_CONF,
-                                 pose=config.USE_POSE,
+                                 conf=config.DET_CONF,
                                  progress_cb=progress_cb,
                                  video_name=vid.name)
     # 识别完成统计
@@ -263,7 +207,8 @@ def _process_one_video(vid, vid_idx, vid_total, work_dir, processed, dfilter,
         checked_count += 1
         if det is None:
             continue
-        frame_time = idx * interval
+        # 关键帧模式帧时间不规则，直接取真实 pts；回退模式为 idx*interval
+        frame_time = frame_times[idx] if idx < len(frame_times) else idx * interval
         frame_hash = utils.frame_hash(frame_path)
 
         with lock:
@@ -280,8 +225,7 @@ def _process_one_video(vid, vid_idx, vid_total, work_dir, processed, dfilter,
         analyze["frame_path"] = str(frame_path)
 
         if (analyze["obj_type"] == "person" and
-                analyze.get("pose") == "unknown" and
-                config.USE_POSE and dur > 0):
+                analyze.get("pose") == "unknown" and dur > 0):
             analyze = _retry_pose(
                 vid, frame_time, dur, analyze,
                 work_dir / "frames" / _vid_uid(vid) / "retry",
@@ -333,23 +277,19 @@ def _process_one_video(vid, vid_idx, vid_total, work_dir, processed, dfilter,
     if cancelled_inner:
         return None, kept_in_video, None
 
-    # 记录无对象视频（线程安全）
+    # 记录无对象视频（线程安全，SQLite 内部自带锁）
     total_detected = kept_in_video + dedup_skipped
     with lock:
-        no_obj = load_no_obj()
         if total_detected == 0:
-            if not any(v.get("path") == str(vid) for v in no_obj):
-                no_obj.append({
+            if not db.has_no_obj(str(vid)):
+                db.add_no_obj({
                     "path": str(vid), "name": vid.name,
                     "duration": f"{dur:.1f}s",
                     "date": str(vdt) if vdt else "",
                 })
-                save_no_obj(no_obj)
                 print(f"[main]   recorded as no-object video")
         else:
-            filtered = [v for v in no_obj if v.get("path") != str(vid)]
-            if len(filtered) != len(no_obj):
-                save_no_obj(filtered)
+            db.remove_no_obj(str(vid))
 
     return key, kept_in_video, None
 
@@ -399,8 +339,8 @@ def process(work_dir, cancel_flag=None, progress_cb=None):
         _progress({"stage": "done", "text": "未找到视频，结束", "current": 0, "total": 0})
         return {"snapshots": 0}
 
-    processed = load_processed()
-    print(f"[main] processed.json: {len(processed)} previously processed video(s)")
+    processed = db.load_processed()
+    print(f"[main] sqlite: {len(processed)} previously processed video(s)")
     dfilter = dedup.DedupFilter()
     snapshot_count = 0
     newly_processed = []
@@ -480,54 +420,99 @@ def process(work_dir, cancel_flag=None, progress_cb=None):
                        f"用时 {total_elapsed:.1f}s",
                "current": len(videos), "total": len(videos)})
 
-    # 持久化已处理记录
-    ts = datetime.now().isoformat()
-    for key in newly_processed:
-        processed[key] = ts
+    # 持久化已处理记录（SQLite）
     if newly_processed:
-        save_processed(processed)
+        ts = datetime.now().isoformat()
+        db.mark_processed({key: ts for key in newly_processed})
         print(f"[main] marked {len(newly_processed)} video(s) as processed")
 
-    # pipeline 运行完后自动生成高清网格截图（不依赖前端浏览器）
+    # 每次定时扫描（pipeline）结束都自动输出高清网格截图（不依赖前端浏览器），
+    # 不受本次是否产生新快照影响：始终取最新的行列数张快照重新拼接，
     # 保存为 OUTPUT_DIR/grid_latest.jpg，通过 /api/grid_latest 固定 URL 访问
-    if snapshot_count > 0:
-        try:
-            _generate_grid_snapshot()
-        except Exception as e:
-            print(f"[main] grid snapshot generation failed: {e}")
+    try:
+        _generate_grid_snapshot()
+    except Exception as e:
+        print(f"[main] grid snapshot generation failed: {e}")
     return {"snapshots": snapshot_count}
 
 
 # ---- 网格截图：标签 / 颜色 / 字体 ----
-# 与大屏 dashboard.html 的 OBJ/POSE 标签和颜色保持一致
-_GRID_OBJ_LABEL = {
-    "person": ("人物", (211, 47, 47)),    # #D32F2F
-    "cat": ("猫咪", (245, 124, 0)),       # #F57C00
-    "dog": ("狗狗", (2, 119, 189)),       # #0277BD
-    "horse": ("马", (94, 53, 177)),
-    "bird": ("鸡鸭", (0, 151, 167)),
-    "sheep": ("羊", (121, 85, 72)),
-    "cow": ("牛", (76, 175, 80)),
-}
+# 与大屏 dashboard.html 的 POSE 标签和颜色保持一致
+# 系统仅检测人物，因此不再绘制对象徽章；姿态按姿态类型使用不同颜色
 _GRID_POSE_LABEL = {
     "lie": "躺", "fall": "躺", "stand": "站立", "sit": "坐下",
     "squat": "蹲下", "bend": "弯腰", "unknown": "未知", "none": "无",
 }
+# 姿态徽章颜色：与大屏 dashboard.html 的 --pose-* 保持一致，不同姿态不同颜色
+_GRID_POSE_COLOR = {
+    "lie": (198, 40, 40),       # #C62828
+    "fall": (198, 40, 40),      # 兼容旧数据 fall→lie
+    "stand": (46, 125, 50),     # #2E7D32
+    "sit": (0, 151, 167),       # #0097A7
+    "squat": (251, 192, 45),    # #FBC02D
+    "bend": (106, 27, 154),     # #6A1B9A
+    "unknown": (117, 117, 117), # #757575
+    "none": (66, 66, 66),       # #424242
+}
+# 项目内置中文字体目录（Docker/容器内不依赖系统字体包，避免中文显示为小方块）
+_PROJECT_FONT_DIR = Path(__file__).resolve().parent / "fonts"
 _FONT_CANDIDATES = [
+    str(_PROJECT_FONT_DIR / "wqy-zenhei.ttc"),  # 项目内置文泉驿正黑（最优）
     "C:/Windows/Fonts/msyh.ttc",        # Windows 微软雅黑
+    "C:/Windows/Fonts/msyhbd.ttc",      # Windows 微软雅黑粗体
     "C:/Windows/Fonts/simhei.ttf",      # Windows 黑体
+    "C:/Windows/Fonts/simsun.ttc",      # Windows 宋体
     "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",  # Docker 文泉驿正黑
+    "/usr/share/fonts/truetype/wqy-zenhei/wqy-zenhei.ttc",
+    "/usr/share/fonts/wqy-zenhei/wqy-zenhei.ttc",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
 ]
+# 动态搜索 CJK 字体（兜底：遍历常见字体目录找 .ttc/.ttf）
+_font_cache = {}
+
+
+def _find_cjk_font():
+    """动态搜索系统中可用的 CJK 字体路径，缓存结果。"""
+    if _font_cache.get("path") is not None:
+        return _font_cache["path"]
+    # 先试候选路径（项目内置字体优先）
+    for fp in _FONT_CANDIDATES:
+        if Path(fp).exists():
+            _font_cache["path"] = fp
+            return fp
+    # 动态搜索常见目录 + 项目内置字体目录
+    search_dirs = [
+        str(_PROJECT_FONT_DIR),
+        "C:/Windows/Fonts",
+        "/usr/share/fonts",
+        "/usr/local/share/fonts",
+    ]
+    for sd in search_dirs:
+        base = Path(sd)
+        if not base.exists():
+            continue
+        for ext in ("*.ttc", "*.ttf", "*.otf"):
+            for fp in base.rglob(ext):
+                name_lower = fp.name.lower()
+                # 匹配常见 CJK 字体名
+                if any(kw in name_lower for kw in
+                       ("wqy", "noto", "cjk", "yahei", "simhei",
+                        "simsun", "droid", "source-han", "ming")):
+                    _font_cache["path"] = str(fp)
+                    return str(fp)
+    _font_cache["path"] = ""  # 未找到
+    return ""
 
 
 def _load_font(size):
     """加载中文字体，按候选路径依次尝试，全部失败则用 PIL 默认字体。"""
-    for fp in _FONT_CANDIDATES:
+    fp = _find_cjk_font()
+    if fp:
         try:
             return ImageFont.truetype(fp, size)
         except Exception:
-            continue
+            pass
     return ImageFont.load_default()
 
 
@@ -581,7 +566,8 @@ def concat_daily_clips(target_date=None):
         return True
     # 用 ffmpeg concat demuxer 拼接（无损、快速）
     list_file = clips_dir / f"_concat_{target_date}.txt"
-    list_file.write_text(
+    utils.atomic_write_text(
+        list_file,
         "\n".join(f"file '{c.name}'" for c in clips),
         encoding="utf-8")
     cmd = [
@@ -603,60 +589,66 @@ def concat_daily_clips(target_date=None):
 
 
 def _generate_grid_snapshot():
-    """拼接当天全部快照为一张网格大图，保存到 OUTPUT_DIR/grid_latest.jpg。
+    """拼接全部快照为一张网格大图，保存到 OUTPUT_DIR/grid_latest.jpg。
 
     统一由后端 PIL 拼接（不依赖浏览器），规则：
-    - 只拼接当天的快照（按文件名前缀 YYYYMMDD_ 判断）
-    - 固定 5 列，行数按数量自动计算
-    - 最多 100 张，超出按时间正序取前 100
-    - 按时间正序排列（从早到晚，左→右、上→下）
+    - 不限当天：收集全部日期的快照，按时间倒序（最新的在前）取前
+      GRID_COLS×GRID_ROWS 张；当天快照不够时自动用前几天的快照补足
+    - 列数=GRID_COLS，行数=GRID_ROWS，最多拼接 cols×rows 张
     - 每格 800×533px（3:2）
-    - 每格右上角日期+时间水印（MM-DD HH:MM:SS）、左上角对象·姿态徽章
-    - 顶部横幅：单行长文本，标题 + 中文日期 + 事件预览统计
-      （只显示检测到的对象，未检测到的不显示）
+    - 每格右上角日期+时间水印、左上角姿态徽章（不同姿态不同颜色）
+    - 顶部横幅：单行长文本，标题 + 中文日期 + 人物统计（统一显示人物数量）
     """
-    cols = 5
-    max_count = 100
+    cols = max(1, int(config.GRID_COLS))
+    rows = max(1, int(config.GRID_ROWS))
+    max_count = cols * rows
     cell_w = 800
     cell_h = 533
-    banner_h = 90
+    banner_h = 110
 
     snap_dir = config.SNAPSHOTS_DIR
+    out_path = config.OUTPUT_DIR / "grid_latest.jpg"
     if not snap_dir.exists():
-        print("[main] grid: snapshots dir not found, skipping")
+        # 快照目录不存在：没有可输出的内容，清理旧的网格图避免大屏显示过期照片
+        print("[main] grid: snapshots dir not found, removing stale grid")
+        try:
+            out_path.unlink(missing_ok=True)
+        except OSError:
+            pass
         return
 
-    # 按文件名前缀过滤当天快照
-    today_str = datetime.now().strftime("%Y%m%d")
-    today_jpgs = [jp for jp in snap_dir.glob("*.jpg")
-                  if jp.name.startswith(today_str + "_")]
-    if not today_jpgs:
-        print(f"[main] grid: no snapshots for today ({today_str}), skipping")
-        return
-
-    # 统计当天快照事件数（与拼接的图片一致，横幅只显示 >0 的对象）
-    stats = {"person": 0, "cat": 0, "dog": 0,
-             "horse": 0, "bird": 0, "sheep": 0, "cow": 0}
-    total_count = 0
-    for jp in today_jpgs:
+    # 收集全部快照（不限当天），解析时间戳，只保留能解析的文件
+    candidates = []
+    for jp in snap_dir.glob("*.jpg"):
         parsed = _parse_snap_name(jp.name)
         if not parsed:
             continue
-        total_count += 1
-        obj = parsed[2]
-        if obj in stats:
-            stats[obj] += 1
-    stats["total"] = total_count
+        d8, t6, obj, pose = parsed
+        candidates.append((d8 + t6, obj, jp))
+    if not candidates:
+        # 没有任何可解析快照：清理旧网格图，避免大屏显示过期照片
+        print("[main] grid: no parseable snapshots, removing stale grid")
+        try:
+            out_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return
 
-    today_jpgs.sort(key=lambda f: f.name)
-    selected = today_jpgs[:max_count]
-    print(f"[main] grid: generating {cols}-col grid from {len(selected)} "
-          f"today's snapshot(s) (total today={len(today_jpgs)}, "
-          f"all-time stats={stats})")
+    # 统计全部快照人物数量（统一显示人物数量）
+    stats = {"person": sum(1 for _, obj, _ in candidates if obj == "person"),
+             "total": len(candidates)}
 
-    # 字体（横幅加大；水印用较小字体适配日期+时间）
-    font_banner = _load_font(38)
-    font_wm = _load_font(24)
+    # 按时间倒序排列（最新在前），取前 max_count 张
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    selected = [jp for _, _, jp in candidates[:max_count]]
+    print(f"[main] grid: generating {cols}x{rows} grid from {len(selected)} "
+          f"latest snapshot(s) (total={len(candidates)}, max={max_count}, "
+          f"stats={stats})")
+
+    # 字体（横幅；姿态文字加大，与大屏展示页观感一致；水印）
+    font_banner = _load_font(48)
+    font_pose = _load_font(48)
+    font_wm = _load_font(32)
 
     # 逐格处理：缩放 + 画水印
     images = []
@@ -673,18 +665,17 @@ def _generate_grid_snapshot():
 
         if parsed:
             d8, t6, obj, pose = parsed
-            # 左上角：对象·姿态徽章
-            obj_info = _GRID_OBJ_LABEL.get(obj, ("未知", (117, 117, 117)))
+            # 左上角：姿态徽章（不同姿态不同颜色，系统仅人物，不再显示对象徽章）
             pose_label = _GRID_POSE_LABEL.get(pose, pose)
-            badge_text = f"{obj_info[0]}·{pose_label}"
-            badge_bg = obj_info[1] + (220,)  # RGBA 半透明
-            _draw_badge(draw, 12, 12, badge_text, badge_bg, font_wm)
+            pose_bg = _GRID_POSE_COLOR.get(
+                pose, _GRID_POSE_COLOR["unknown"]) + (220,)
+            _draw_badge(draw, 12, 12, pose_label, pose_bg, font_pose)
 
             # 右上角：完整日期+时间水印 YYYY-MM-DD HH:MM:SS
             wm_text = f"{d8[0:4]}-{d8[4:6]}-{d8[6:8]} {t6[0:2]}:{t6[2:4]}:{t6[4:6]}"
             bbox = draw.textbbox((0, 0), wm_text, font=font_wm)
             tw = bbox[2] - bbox[0]
-            _draw_badge(draw, cell_w - tw - 32, 12, wm_text,
+            _draw_badge(draw, cell_w - tw - 44, 12, wm_text,
                         (0, 0, 0, 180), font_wm)
 
         images.append(im)
@@ -699,19 +690,13 @@ def _generate_grid_snapshot():
     grid_h = banner_h + actual_rows * cell_h
     canvas = Image.new("RGB", (grid_w, grid_h), (18, 20, 24))
 
-    # ---- 顶部横幅：单行长文本，只显示检测到的对象 ----
+    # ---- 顶部横幅：单行长文本，统一显示人物数量 ----
     bd = ImageDraw.Draw(canvas, "RGBA")
     now = datetime.now()
     date_cn = f"{now.year}年{now.month:02d}月{now.day:02d}日"
-    # 按固定顺序拼统计，只包含 >0 的对象
-    parts = [f"总事件{stats['total']}"]
-    for key in ("person", "cat", "dog", "horse", "bird", "sheep", "cow"):
-        if stats.get(key, 0) > 0:
-            label = _GRID_OBJ_LABEL[key][0]
-            parts.append(f"{label}{stats[key]}")
-    stats_str = "  ".join(parts)
-    banner_text = f"🏠 NAS 智慧家自研视觉检测事件监控大屏   {date_cn}   事件预览 - {stats_str}"
-    bd.text((24, 24), banner_text, fill=(230, 230, 230), font=font_banner)
+    banner_text = (f"NAS 智慧家视觉检测监控大屏   {date_cn}   "
+                   f"人物{stats['person']}")
+    bd.text((24, 30), banner_text, fill=(230, 230, 230), font=font_banner)
     # 横幅底部分隔线
     bd.line([(0, banner_h), (grid_w, banner_h)], fill=(42, 47, 58), width=1)
 
@@ -721,12 +706,42 @@ def _generate_grid_snapshot():
         c = i % cols
         canvas.paste(im, (c * cell_w, banner_h + r * cell_h))
 
-    # 保存（覆盖旧文件，高质量）
-    out_path = config.OUTPUT_DIR / "grid_latest.jpg"
+    # 保存（覆盖旧文件，高质量；原子替换避免写一半留坏图）
     config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    canvas.save(str(out_path), "JPEG", quality=95)
+    utils.atomic_save_image(canvas, out_path, format="JPEG", quality=95)
     print(f"[main] grid: saved {len(images)} image(s) to {out_path.name} "
-          f"({grid_w}x{grid_h}, banner+watermark, quality=95)")
+          f"({grid_w}x{grid_h}, banner+pose-color+watermark, quality=95)")
+
+    # 保存到历史文件夹，用日期命名文件，不覆盖上次输出
+    history_dir = config.OUTPUT_DIR / "grid_history"
+    history_dir.mkdir(parents=True, exist_ok=True)
+    now_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    history_path = history_dir / f"grid_{now_str}.jpg"
+    utils.atomic_save_image(canvas, history_path, format="JPEG", quality=95)
+    print(f"[main] grid: history copy saved to grid_history/{history_path.name}")
+
+    # 另存一份 KB 级压缩图（供轻量传输/外部接口 /api/grid_compressed 使用）
+    if config.GRID_COMPRESS:
+        try:
+            comp_path = config.OUTPUT_DIR / "grid_latest_compressed.jpg"
+            data, q = utils.compress_jpeg_to_bytes(
+                canvas,
+                max_width=config.GRID_MAX_WIDTH,
+                target_bytes=config.GRID_TARGET_KB * 1024,
+                min_quality=config.GRID_COMPRESS_MIN_Q,
+            )
+            utils.atomic_write_bytes(comp_path, data)
+            print(f"[main] grid: compressed copy saved to {comp_path.name} "
+                  f"({len(data)/1024:.1f}KB, quality={q}, "
+                  f"max_w={config.GRID_MAX_WIDTH}, target={config.GRID_TARGET_KB}KB)")
+            # 压缩版也保存历史，平铺在同一文件夹，用日期命名不覆盖
+            comp_history_path = history_dir / f"grid_compressed_{now_str}.jpg"
+            utils.atomic_write_bytes(comp_history_path, data)
+            print(f"[main] grid: compressed history copy saved to "
+                  f"grid_history/{comp_history_path.name} "
+                  f"({len(data)/1024:.1f}KB)")
+        except Exception as e:
+            print(f"[main] grid: failed to write compressed copy: {e}")
 
 
 def _retry_pose(vid, frame_time, dur, orig_analyze, retry_dir,
@@ -756,11 +771,24 @@ def _retry_pose(vid, frame_time, dur, orig_analyze, retry_dir,
                             "frame_time": round(frame_time, 1),
                             "retry_frames": len(times),
                         })
-        print(f"[main]   pose retry: extracting {len(times)} frames around {frame_time:.1f}s")
+        print(f"[main]   pose retry: extracting {len(times)} frames around {frame_time:.1f}s "
+              f"(offsets=[-6,-4,-2,2,4,6])")
 
-        retry_frames = extract_frames_at_times(vid, times, retry_dir)
+        # 抽帧进度回调：让重试抽帧期间前端进度条继续走动，
+        # 避免"一直不走进度"的错觉（重试窗口抽帧可能耗时数秒~数十秒）。
+        def _retry_extract_progress(current, total=None):
+            progress_cb("pose",
+                        f"姿态重试抽帧中: {vid.name}（{current} 帧）",
+                        vid_idx, vid_total, extra={
+                            "video": vid.name, "phase": "pose_retry_extract",
+                            "frame": current,
+                        })
+
+        retry_frames = extract_frames_at_times(vid, times, retry_dir,
+                                               progress_cb=_retry_extract_progress)
         if not retry_frames:
-            print(f"[main]   pose retry: no frames extracted, keeping original")
+            print(f"[main]   pose retry: 重试抽帧未得到任何帧（源视频在该窗口无可解码帧？），"
+                  f"保留原结果")
             return orig_analyze
 
         # 对重试帧运行检测
@@ -773,9 +801,7 @@ def _retry_pose(vid, frame_time, dur, orig_analyze, retry_dir,
                         info.get("extra"))
         frame_paths = [str(fp) for _, fp in retry_frames]
         retry_dets = detect.detect_objects(frame_paths,
-                                           person_conf=config.DET_CONF,
-                                           pet_conf=config.PET_CONF,
-                                           pose=config.USE_POSE,
+                                           conf=config.DET_CONF,
                                            progress_cb=_retry_progress,
                                            video_name=f"{vid.name}(重试)")
 
@@ -802,7 +828,9 @@ def _retry_pose(vid, frame_time, dur, orig_analyze, retry_dir,
 
         print(f"[main]   pose retry: all {len(retry_frames)} frames still unknown, keeping original")
     except Exception as e:
-        print(f"[main]   pose retry ERROR: {e}")
+        import traceback
+        print(f"[main]   pose retry ERROR @ {frame_time:.1f}s: {type(e).__name__}: {e}")
+        traceback.print_exc()
     return orig_analyze
 
 
@@ -875,8 +903,8 @@ def _crop_to_subject(im, bbox, ratio=(3, 2), padding=0.25):
 
 def _emit_event(seg_path, analyze, event_time, source_video=None,
                 start_time=0.0):
-    """只写一张 JPG 关键帧（人物绘制骨架），并在 index.json 中记录源视频
-    路径与起始时间，大屏据此跳转到源视频播放。不再复制裁剪后的 MP4。
+    """只写一张 JPG 关键帧（人物绘制骨架），并在 SQLite（src/db.py）中
+    记录源视频路径与起始时间，大屏据此跳转到源视频播放。不再复制裁剪后的 MP4。
 
     快照会围绕检测框裁剪到统一 3:2 比例并缩放到固定尺寸，突出主体，
     大屏展示更整齐美观。
@@ -891,7 +919,7 @@ def _emit_event(seg_path, analyze, event_time, source_video=None,
     snap = config.SNAPSHOTS_DIR / f"{base}.jpg"
 
     # 跨运行去重：若已存在同时间戳+同对象+同姿态的快照，跳过写入。
-    # 避免清空 processed.json 重处理视频时产生重复快照。
+    # 避免清空 processed 记录重处理视频时产生重复快照。
     prefix = f"{ts}_{obj}_pose-{pose}_"
     existing = list(config.SNAPSHOTS_DIR.glob(f"{prefix}*.jpg"))
     if existing:
@@ -911,9 +939,10 @@ def _emit_event(seg_path, analyze, event_time, source_video=None,
     tw = config.SNAPSHOT_WIDTH
     th = int(tw * config.SNAPSHOT_RATIO[1] / config.SNAPSHOT_RATIO[0])
     im = im.resize((tw, th), Image.Resampling.LANCZOS)
-    im.save(str(snap), quality=92)
+    # 原子写入：先写临时文件再替换，避免进程崩溃留下半截快照
+    utils.atomic_save_image(im, snap, quality=92)
 
-    _record_event(base, {
+    db.upsert_event(base, {
         "source_video": str(source_video) if source_video else None,
         "start_time": float(start_time),
         "obj": obj,
@@ -937,7 +966,7 @@ def _emit_event(seg_path, analyze, event_time, source_video=None,
 def run_pipeline(input_dir=None, output_dir=None, work_dir=None,
                  det_conf=None,
                  similarity_threshold=None, det_interval=None,
-                 date_source=None, camera_brand=None, use_pose=None,
+                 date_source=None, camera_brand=None,
                  scan_hours=None, scan_mode=None, cancel_flag=None,
                  input_sources=None, progress_cb=None,
                  worker_threads=None, frame_retention_days=None):
@@ -976,8 +1005,6 @@ def run_pipeline(input_dir=None, output_dir=None, work_dir=None,
         config.DATE_SOURCE = date_source
     if camera_brand is not None:
         config.CAMERA_BRAND = camera_brand
-    if use_pose is not None:
-        config.USE_POSE = (str(use_pose).lower() == "true")
     if scan_hours is not None:
         try:
             config.SCAN_HOURS = float(scan_hours)

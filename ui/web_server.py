@@ -5,34 +5,34 @@ the pipeline. Implemented as a Flask Blueprint so it can be merged into the
 main control app (single port) and also run standalone on :5000.
 
 从本次需求调整起，事件不再产出裁剪后的 MP4，只保存 JPG 关键帧。每张 JPG
-在 SNAPSHOTS_DIR/index.json 中记录其源视频路径与起始时间，大屏点击图片时
-通过 /source 路由直接跳转到源视频的对应位置播放（HTML5 video，无需插件）。
+在 SQLite（src/db.py）中记录其源视频路径与起始时间，大屏点击图片时通过
+/source 路由直接跳转到源视频的对应位置播放（HTML5 video，无需插件）。
 
 文件命名： <YYYYMMDD_HHMMSS>_<obj>_pose-<pose>_<rand>.jpg
-  obj  : person | cat | dog | horse | bird | sheep | cow
+  obj  : person（系统仅检测人物；正则保留 person 以兼容旧快照）
   pose : lie | stand | sit | squat | bend | unknown | none
 """
-import json
 import re
 from datetime import datetime
 from pathlib import Path
 
 from flask import (Blueprint, Flask, jsonify, render_template, request,
-                   send_from_directory, send_file, abort)
+                   send_from_directory, send_file, abort, redirect)
 
-from src import config
+from src import config, db
 
 bp = Blueprint("dashboard", __name__, template_folder="templates")
 
 _NAME_RE = re.compile(
-    r"(\d{8})_(\d{6})_(person|cat|dog|horse|bird|sheep|cow)_pose-([A-Za-z]+)_(.+)\.jpg$")
+    r"(\d{8})_(\d{6})_person_pose-([A-Za-z]+)_(.+)\.jpg$")
 
 
 def parse_name(name):
     m = _NAME_RE.match(name)
     if not m:
         return None
-    d8, t6, obj, pose, rand = m.groups()
+    d8, t6, pose, rand = m.groups()
+    obj = "person"  # 系统仅检测人物
     # 兼容旧数据：fall → lie
     if pose == "fall":
         pose = "lie"
@@ -53,14 +53,8 @@ def parse_name(name):
 
 
 def _load_events_index():
-    """加载 index.json：{base: {source_video, start_time, ...}}"""
-    p = Path(config.SNAPSHOTS_DIR) / "index.json"
-    if not p.exists():
-        return {}
-    try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    """加载事件元数据（SQLite）：{base: {source_video, start_time, ...}}"""
+    return db.load_events_index()
 
 
 def collect_events(scope="all"):
@@ -72,7 +66,7 @@ def collect_events(scope="all"):
     events = []
     d = Path(config.SNAPSHOTS_DIR)
     if not d.exists():
-        return events, {"total": 0, "person": 0, "cat": 0, "dog": 0}
+        return events, {"total": 0, "person": 0}
 
     today_str = datetime.now().strftime("%Y%m%d")
     for p in sorted(d.iterdir()):
@@ -99,7 +93,7 @@ def collect_events(scope="all"):
 
     events.sort(key=lambda e: e["sortKey"], reverse=True)
 
-    stats = {"total": 0, "person": 0, "cat": 0, "dog": 0}
+    stats = {"total": 0, "person": 0}
     for e in events:
         stats["total"] += 1
         if e["objType"] in stats:
@@ -109,7 +103,8 @@ def collect_events(scope="all"):
 
 @bp.route("/dashboard")
 def dashboard():
-    return render_template("dashboard.html")
+    # 统一入口为 /，避免两个 URL 渲染同一页面造成歧义
+    return redirect("/", code=301)
 
 
 @bp.route("/api/events")

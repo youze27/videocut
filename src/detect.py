@@ -1,35 +1,108 @@
-"""Person detection with YOLOv8 (Ultralytics).
+"""Person detection + pose estimation with a single YOLOv8-pose model.
 
-Replaces the old OpenCV MobileNet-SSD detector: YOLOv8 is more accurate for
-distant / small people, and the same model can be swapped for the pose variant
-(`yolov8n-pose.pt`) for keypoint / posture information. Person = class 0.
+全局固定使用 yolov8n-pose.pt（COCO-pose）：一次推理同时输出 person 检测框
+(result.boxes) 与 17 骨骼关键点 (result.keypoints)。不再加载 yolov8n.pt
+（多类检测器），因此只检测"人"，猫/狗等动物不再识别。
+
+部署形态：模型可加载 OpenVINO IR / ONNX / .pt 权重（由 config.MODEL_PATH
+指定，ultralytics 按扩展名自动识别），Intel CPU 上使用 OpenVINO 加速。
 """
 import time
 import cv2
+import logging
 import numpy as np
 from pathlib import Path
 
 from . import config
 
+# 修复 ultralytics 在 worker 线程中写日志时 stdout 已关闭导致崩溃的问题
+class _RobustStreamHandler(logging.StreamHandler):
+    def emit(self, record):
+        try:
+            super().emit(record)
+        except (ValueError, OSError):
+            # stream 已关闭，静默丢弃这条日志，避免线程崩溃
+            pass
+
+
+def _patch_ultralytics_logging():
+    """给 ultralytics 的 LOGGER 安装健壮 handler，防止线程崩溃。"""
+    try:
+        log = logging.getLogger("ultralytics")
+        # 替换已有 StreamHandler 为健壮版本
+        for h in list(log.handlers):
+            if isinstance(h, logging.StreamHandler) and not isinstance(h, _RobustStreamHandler):
+                log.removeHandler(h)
+                new_h = _RobustStreamHandler(stream=h.stream)
+                new_h.setLevel(h.level)
+                new_h.setFormatter(h.formatter)
+                log.addHandler(new_h)
+    except Exception:
+        pass
+
+
+_patch_ultralytics_logging()
+
 _model = None
-_pose_model = None
+_batch_cap = None  # 模型支持的最大 batch（首次查询后缓存）
 
 
-def load_model(pose=False):
-    global _model, _pose_model
-    from ultralytics import YOLO
-    if pose:
-        if _pose_model is None:
-            t0 = time.time()
-            print(f"[detect] loading pose model: {config.POSE_MODEL}")
-            _pose_model = YOLO(str(config.POSE_MODEL))
-            print(f"[detect] pose model loaded in {time.time()-t0:.1f}s")
-        return _pose_model
+def _max_batch(default=16):
+    """返回模型实际支持的最大推理 batch。
+
+    OpenVINO 静态模型（dynamic=False 导出）batch 固定为 1，传列表批推理会报
+    "got [16,3,640,640] expecting [1,3,640,640]"；动态模型/其他后端支持默认值。
+    首次调用做一次预热推理以初始化 predictor，再读取输入形状，结果缓存。
+    """
+    global _batch_cap
+    if _batch_cap is not None:
+        return _batch_cap
+    cap = default
+    try:
+        model = load_model()
+        # 触发一次最小推理，让 predictor 初始化（AutoBackend 在其中）
+        model(np.zeros((64, 64, 3), dtype=np.uint8), verbose=False)
+        ab = getattr(getattr(model, "predictor", None), "model", None)
+        ov = getattr(ab, "ov_model", None)
+        if ov is not None:
+            ps = ov.input(0).partial_shape
+            if ps.is_static:  # 静态形状：取固定 batch（可能为 1）
+                cap = max(1, ps[0].get_length())
+    except Exception:
+        cap = default
+    _batch_cap = cap
+    return cap
+
+
+def _resolve_model_path():
+    """返回实际存在的模型路径，按优先级回退：
+    1. config.MODEL_PATH（OpenVINO IR 目录 / onnx / .pt）
+    2. <MODEL_DIR>/yolov8n-pose.pt
+    3. 仓库根目录 yolov8n-pose.pt"""
+    candidates = [config.MODEL_PATH,
+                  config.MODEL_DIR / "yolov8n-pose.pt",
+                  Path(__file__).resolve().parent.parent / "yolov8n-pose.pt"]
+    for c in candidates:
+        try:
+            if Path(c).exists():
+                return Path(c)
+        except Exception:
+            continue
+    raise FileNotFoundError(
+        f"Model not found. Tried: {[str(c) for c in candidates]}. "
+        "Run `python tools/export_model.py` or place yolov8n-pose.pt in models/.")
+
+
+def load_model():
+    """加载唯一的 pose 模型（OpenVINO IR / ONNX / .pt），缓存复用。"""
+    global _model
     if _model is None:
+        from ultralytics import YOLO
+        path = _resolve_model_path()
         t0 = time.time()
-        print(f"[detect] loading detection model: {config.MODEL_PATH}")
-        _model = YOLO(str(config.MODEL_PATH))
-        print(f"[detect] detection model loaded in {time.time()-t0:.1f}s")
+        print(f"[detect] loading model: {path}")
+        _model = YOLO(str(path))
+        print(f"[detect] model loaded in {time.time()-t0:.1f}s")
     return _model
 
 
@@ -51,11 +124,12 @@ def _best_box(result, conf):
     return best
 
 
-def detect_frames(paths, conf=None, pose=False, batch=16):
+def detect_frames(paths, conf=None, batch=16):
     """Run detection on a list of image/video paths. Returns a list of
     (score, bbox) per input, or None when no person is found."""
     conf = conf if conf is not None else config.DET_CONF
-    model = load_model(pose=pose)
+    model = load_model()
+    batch = max(1, min(batch, _max_batch()))
     out = []
     for i in range(0, len(paths), batch):
         chunk = paths[i:i + batch]
@@ -65,18 +139,18 @@ def detect_frames(paths, conf=None, pose=False, batch=16):
     return out
 
 
-def has_person(frame_or_path, conf=None, pose=False):
+def has_person(frame_or_path, conf=None):
     """Return True if a person is detected in a single frame/image path."""
     conf = conf if conf is not None else config.DET_CONF
-    model = load_model(pose=pose)
+    model = load_model()
     res = model(frame_or_path, classes=[0], conf=conf, verbose=False)
     return _best_box(res[0], conf) is not None
 
 
-def detect_person_best(frame_or_path, conf=None, pose=False):
+def detect_person_best(frame_or_path, conf=None):
     """Return (score, bbox) for the most confident person, or None."""
     conf = conf if conf is not None else config.DET_CONF
-    model = load_model(pose=pose)
+    model = load_model()
     res = model(frame_or_path, classes=[0], conf=conf, verbose=False)
     return _best_box(res[0], conf)
 
@@ -91,10 +165,9 @@ POSE_SKELETON = [
 def detect_pose(paths, conf=None, batch=16):
     """Run the pose model on image/video paths. Returns a list of
     (score, xy, kconf) per input, where `xy` is a (17,2) keypoint array and
-    `kconf` a (17,) confidence array, or None when no person is found.
-    Requires the pose model (USE_POSE / POSE_MODEL)."""
+    `kconf` a (17,) confidence array, or None when no person is found."""
     conf = conf if conf is not None else config.DET_CONF
-    model = load_model(pose=True)
+    model = load_model()
     out = []
     for i in range(0, len(paths), batch):
         chunk = paths[i:i + batch]
@@ -134,41 +207,6 @@ def draw_skeleton(image, xy, kconf=None, color=(0, 255, 128), width=2):
         draw.ellipse([int(x) - 3, int(y) - 3, int(x) + 3, int(y) + 3],
                     fill=color)
     return image
-
-
-# YOLO class id -> object type used by the event dashboard.
-# COCO 80类中选取监控场景常见对象：人 + 常见动物（猫/狗/马/鸟/羊/牛）
-OBJ_CLASSES = {
-    0: "person",
-    14: "bird",    # 鸟/鸡/鸭等家禽
-    15: "cat",
-    16: "dog",
-    17: "horse",   # 马
-    18: "sheep",   # 羊
-    19: "cow",     # 牛
-}
-
-
-def _best_multi(result, person_conf, pet_conf):
-    """Return (obj_type, score, (x1,y1,x2,y2)) for the highest-confidence
-    person/cat/dog box, honoring per-class confidence thresholds."""
-    boxes = result.boxes
-    if boxes is None or len(boxes) == 0:
-        return None
-    best = None
-    for b in boxes:
-        cid = int(b.cls[0])
-        if cid not in OBJ_CLASSES:
-            continue
-        conf = float(b.conf[0])
-        thr = person_conf if cid == 0 else pet_conf
-        if conf < thr:
-            continue
-        score = conf
-        if best is None or score > best[1]:
-            x1, y1, x2, y2 = b.xyxy[0].tolist()
-            best = (OBJ_CLASSES[cid], score, (int(x1), int(y1), int(x2), int(y2)))
-    return best
 
 
 def classify_pose(kp, kconf):
@@ -288,45 +326,37 @@ def _crop_person(img_path, bbox, padding=0.3, min_size=320):
     return crop
 
 
-def detect_objects(paths, person_conf=None, pet_conf=None, pose=None, batch=16,
-                   progress_cb=None, video_name=""):
-    """Detect person/animals across image paths. Returns a list (per input) of
-    dicts: {obj_type, score, bbox, keypoints, kconf, pose} or None.
+def detect_objects(paths, conf=None, batch=16, progress_cb=None, video_name=""):
+    """Single-model person detection + pose estimation across image paths.
 
-    支持的对象（COCO 类）：person / bird(鸡鸭) / cat / dog / horse / sheep / cow
-    优化策略（两者结合）：
-    1. 人物直接用 pose_model 一体推理（检测+关键点），省去 det_model 二次推理
-    2. 动物用 det_model 多类检测
-    3. 人物 pose=unknown 且 bbox 较小时，裁剪+上采样后重新跑 pose_model
+    Returns a list (per input) of dicts:
+      {obj_type, score, bbox, keypoints, kconf, pose}  or None.
 
-    progress_cb: 可选回调，每完成一批检测/一次 pose 推理时调用，用于前端
-    展示细粒度进度（当前第几帧、识别到什么对象等）。
+    只用 pose 模型一次推理：同一帧同时得到 person 检测框与 17 关键点，
+    不再做 det 模型二次推理。人物 pose=unknown 且 bbox 较小时，
+    裁剪+上采样后重新推理以提高关键点质量。
+
+    progress_cb: 可选回调，每完成一批检测时调用，用于前端展示细粒度进度。
     video_name: 当前视频名，仅用于进度描述。
     """
-    person_conf = person_conf if person_conf is not None else config.DET_CONF
-    pet_conf = pet_conf if pet_conf is not None else config.PET_CONF
-    if pose is None:
-        pose = config.USE_POSE
+    conf = conf if conf is not None else config.DET_CONF
 
     total_frames = len(paths)
     t0 = time.time()
-    print(f"[detect] starting: {total_frames} frames, "
-          f"person_conf={person_conf}, pet_conf={pet_conf}, pose={pose}, "
-          f"batch={batch}")
+    print(f"[detect] starting: {total_frames} frames, conf={conf}, batch={batch}")
 
-    det_model = load_model(pose=False)  # 多类检测器（人/动物）
-    pose_model = load_model(pose=True) if pose else None  # 人物姿态一体模型
+    model = load_model()
+    batch = max(1, min(batch, _max_batch()))
     out = []
     detected_count = 0
     retry_count = 0
     processed = 0  # 已处理的帧数（含本批）
     for i in range(0, total_frames, batch):
         chunk = paths[i:i + batch]
-        results = det_model(chunk, classes=list(OBJ_CLASSES.keys()),
-                            conf=min(person_conf, pet_conf), verbose=False)
+        results = model(chunk, classes=[0], conf=conf, verbose=False)
         for r, p in zip(results, chunk):
-            best = _best_multi(r, person_conf, pet_conf)
-            # 取本帧文件名（用于 pose 进度描述）
+            best = _best_box(r, conf)
+            # 取本帧文件名（用于进度描述）
             try:
                 frame_label = Path(p).name
             except Exception:
@@ -345,59 +375,34 @@ def detect_objects(paths, person_conf=None, pet_conf=None, pose=None, batch=16,
                     })
                 continue
             detected_count += 1
-            obj_type, score, bbox = best
-            kp = None
-            kconf = None
-            pose_label = "none"
-            if obj_type == "person" and pose and pose_model is not None:
-                # 一体推理：pose 模型本身能检测 person + 估计关键点
+            score, bbox = best
+            kp, kconf, pose_label = _pose_from_result(r)
+            # 小人物 + pose=unknown → 裁剪+上采样重试
+            bw = bbox[2] - bbox[0]
+            bh = bbox[3] - bbox[1]
+            if pose_label == "unknown" and min(bw, bh) < 200:
                 if progress_cb:
                     progress_cb({
                         "stage": "pose",
-                        "text": f"姿态识别: {video_name} · {frame_label}",
+                        "text": f"姿态裁剪重试: {video_name} · {frame_label}",
                         "current": processed + 1, "total": total_frames,
                         "extra": {"video": video_name, "frame": frame_label,
-                                  "obj": obj_type, "phase": "pose_inference"},
+                                  "obj": "person", "phase": "crop_retry"},
                     })
-                try:
-                    pres = pose_model(p, classes=[0],
-                                      conf=person_conf, verbose=False)
-                    kp, kconf, pose_label = _pose_from_result(pres[0])
-                    # 小人物 + pose=unknown → 裁剪+上采样重试
-                    bw = bbox[2] - bbox[0]
-                    bh = bbox[3] - bbox[1]
-                    if pose_label == "unknown" and min(bw, bh) < 200:
-                        if progress_cb:
-                            progress_cb({
-                                "stage": "pose",
-                                "text": f"姿态裁剪重试: {video_name} · {frame_label}",
-                                "current": processed + 1, "total": total_frames,
-                                "extra": {"video": video_name, "frame": frame_label,
-                                          "obj": obj_type, "phase": "crop_retry"},
-                            })
-                        crop = _crop_person(p, bbox)
-                        if crop is not None:
-                            try:
-                                rpres = pose_model(crop, classes=[0],
-                                                   conf=person_conf,
-                                                   verbose=False)
-                                rkp, rkconf, rlabel = _pose_from_result(rpres[0])
-                                if rlabel != "unknown":
-                                    pose_label = rlabel
-                                    kp = rkp
-                                    kconf = rkconf
-                                    retry_count += 1
-                            except Exception as e:
-                                print(f"[detect] crop retry failed for {p}: {e}")
-                except Exception as e:
-                    print(f"[detect] pose inference failed for {p}: {e}")
-                    pose_label = "unknown"
-            elif obj_type == "person":
-                pose_label = "unknown"
-            else:
-                pose_label = "none"
+                crop = _crop_person(p, bbox)
+                if crop is not None:
+                    try:
+                        rpres = model(crop, classes=[0], conf=conf, verbose=False)
+                        rkp, rkconf, rlabel = _pose_from_result(rpres[0])
+                        if rlabel != "unknown":
+                            pose_label = rlabel
+                            kp = rkp
+                            kconf = rkconf
+                            retry_count += 1
+                    except Exception as e:
+                        print(f"[detect] crop retry failed for {p}: {e}")
             out.append({
-                "obj_type": obj_type, "score": score, "bbox": bbox,
+                "obj_type": "person", "score": score, "bbox": bbox,
                 "keypoints": kp, "kconf": kconf, "pose": pose_label,
             })
             processed += 1
@@ -408,17 +413,10 @@ def detect_objects(paths, person_conf=None, pet_conf=None, pose=None, batch=16,
                     "current": processed, "total": total_frames,
                     "extra": {"video": video_name, "frame": frame_label,
                               "detected_so_far": detected_count,
-                              "result": f"{obj_type}/{pose_label}"},
+                              "result": f"person/{pose_label}"},
                 })
 
     elapsed = time.time() - t0
-    # 统计检测到的对象类型分布
-    type_counts = {}
-    for d in out:
-        if d:
-            t = d["obj_type"]
-            type_counts[t] = type_counts.get(t, 0) + 1
-    type_str = ", ".join(f"{k}={v}" for k, v in sorted(type_counts.items())) or "none"
     print(f"[detect] done in {elapsed:.1f}s: {detected_count}/{total_frames} frames "
-          f"had detections ({type_str}), pose_crop_retry={retry_count}")
+          f"had person ({detected_count} events), pose_crop_retry={retry_count}")
     return out

@@ -23,6 +23,18 @@ WORK_DIR = Path(os.environ.get("WORK_DIR", "/work"))
 
 # Where YOLOv8 weights are downloaded at build time.
 MODEL_DIR = Path(os.environ.get("MODEL_DIR", "/app/models"))
+# 本地开发回退：容器路径不存在时，用仓库内 models/ 目录。
+# 注意：Windows 上 /app/models 可能命中残留的 C:\app\models（旧容器产物），
+# 导致加载到过期的 .pt 而非 OpenVINO IR。因此只要仓库内 models/ 含
+# 当前 IR（yolov8n-pose_int8_openvino_model），一律优先使用仓库目录。
+# 容器内 /app/models 与仓库 models/ 是同一份拷贝（Dockerfile COPY），结果一致。
+_local_models = Path(__file__).resolve().parent.parent / "models"
+if _local_models.exists() and (
+        _local_models / "yolov8n-pose_int8_openvino_model").exists():
+    MODEL_DIR = _local_models
+elif not MODEL_DIR.exists():
+    if _local_models.exists():
+        MODEL_DIR = _local_models
 
 # Length (seconds) of each candidate clip cut from source videos (用于抽帧检测).
 SEGMENT_DURATION = int(os.environ.get("SEGMENT_DURATION", "4"))
@@ -55,19 +67,18 @@ DATE_TOLERANCE_DAYS = int(os.environ.get("DATE_TOLERANCE_DAYS", "0"))
 # Person detection confidence threshold.
 DET_CONF = float(os.environ.get("DET_CONF", "0.5"))
 
-# Confidence for pet (cat/dog) detection; often noisier, keep a bit higher.
-PET_CONF = float(os.environ.get("PET_CONF", "0.5"))
-
 # Sampling interval (seconds) between frames extracted for detection.
-DET_INTERVAL = float(os.environ.get("DET_INTERVAL", "4.0"))
+DET_INTERVAL = float(os.environ.get("DET_INTERVAL", "3.0"))
 
-# YOLOv8 model for person detection (class 0). Pose variant optional.
-MODEL_PATH = Path(os.environ.get("MODEL_PATH", str(MODEL_DIR / "yolov8n.pt")))
-POSE_MODEL = Path(os.environ.get("POSE_MODEL", str(MODEL_DIR / "yolov8n-pose.pt")))
-
-# Use the pose model (yolov8n-pose.pt) for detection, enabling posture/keypoint
-# information on top of person detection. Set false to use yolov8n.pt.
-USE_POSE = os.environ.get("USE_POSE", "true").lower() == "true"
+# 唯一模型：yolov8n-pose.pt（COCO-pose）。一次推理同时输出 person 检测框
+# (boxes) 与 17 骨骼关键点 (keypoints)。全局固定使用，无双模型切换。
+# 部署形态：默认加载 INT8 OpenVINO IR（体积小 40%、批推理再快约 5~8%，
+# 精度几乎无损，已验证 IoU≈0.97）；FP16 IR 保留为备选。
+# 支持路径：OpenVINO 目录/onnx 文件/.pt 权重。
+MODEL_PATH = Path(os.environ.get("MODEL_PATH", str(MODEL_DIR / "yolov8n-pose_int8_openvino_model")))
+# 兼容旧环境变量 POSE_MODEL：未设置 MODEL_PATH 时回退。
+if not os.environ.get("MODEL_PATH"):
+    MODEL_PATH = Path(os.environ.get("POSE_MODEL", str(MODEL_PATH)))
 
 # Frames sampled per segment for person detection (legacy, kept for compat).
 DET_SAMPLES = int(os.environ.get("DET_SAMPLES", "8"))
@@ -110,6 +121,16 @@ WORKER_THREADS = os.environ.get("WORKER_THREADS", "auto")
 # 固定 5 列、最多 100 张、按时间正序排列；GRID_COLS 控制列数。
 GRID_COLS = int(os.environ.get("GRID_COLS", "5"))
 GRID_ROWS = int(os.environ.get("GRID_ROWS", "20"))
+
+# 网格截图压缩（另存一份 KB 级压缩图，供轻量传输/外部接口使用）：
+# - GRID_COMPRESS: 是否在生成 grid_latest.jpg 时额外生成 grid_latest_compressed.jpg
+# - GRID_MAX_WIDTH: 压缩图最大宽度（px），按此等比缩放，控制整体尺寸
+# - GRID_TARGET_KB: 压缩目标体积（KB），JPEG 质量会自适配到该上限以下
+# - GRID_COMPRESS_MIN_Q: 质量下限，防止为了压体积把图压到看不清
+GRID_COMPRESS = bool(int(os.environ.get("GRID_COMPRESS", "1")))
+GRID_MAX_WIDTH = int(os.environ.get("GRID_MAX_WIDTH", "1280"))
+GRID_TARGET_KB = int(os.environ.get("GRID_TARGET_KB", "200"))
+GRID_COMPRESS_MIN_Q = int(os.environ.get("GRID_COMPRESS_MIN_Q", "40"))
 
 # 裁剪片段：检测到事件时，从源视频裁剪前后 CLIP_SECONDS 秒的短视频。
 # 保存到 SNAPSHOTS_DIR/clips/，与快照同名（.mp4）。点击快照时播放对应片段。

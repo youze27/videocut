@@ -1,0 +1,5 @@
+# INT8 混合精度量化（NNCF PTQ）仅在导出模型时需要（构建机/开发机运行
+# python tools/export_model.py --int8 时用到），运行时容器不需要安装。
+# ultralytics 的 check_requirements 也会自动安装 nncf，但显式列出便于复现。
+packaging>=23.2
+nncf>=2.14.0

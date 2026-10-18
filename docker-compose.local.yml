@@ -5,7 +5,7 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      # 本地测试目录：放测试视频到 ./test_host 下，输出也在里面
+      # 本地测试目录：把测试视频放到 ./test_host 下，输出也在里面
       - ./test_host:/host
       - ./test_work:/work
       # 挂载源码，改代码不用重建镜像

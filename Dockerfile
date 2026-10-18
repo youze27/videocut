@@ -27,6 +27,8 @@ RUN find /etc/apt -name '*.list' -exec sed -i \
         curl \
         ca-certificates \
         tzdata \
+        # 中文渲染兜底字体（拼接照片优先使用项目内置 src/fonts/wqy-zenhei.ttc，
+        # 此包作为系统级备用；两者保证拼接照片中文不显示为小方块）
         fonts-wqy-zenhei \
     && rm -rf /var/lib/apt/lists/*
 
@@ -48,16 +50,23 @@ RUN pip install --no-cache-dir -r requirements.txt -r requirements-ui.txt
 RUN pip uninstall -y opencv-python 2>/dev/null; \
     pip install --no-cache-dir --force-reinstall --no-deps opencv-python-headless==4.9.0.80
 
-# Download YOLOv8 weights (person detect + pose). Try GitHub proxies first,
-# then direct, so it works behind GFW.
+# 统一模型：仅 yolov8n-pose.pt（检测+姿态一体，一次推理输出 person 框+17 关键点）。
+# 运行时默认加载 INT8 OpenVINO IR（config.MODEL_PATH=/app/models/yolov8n-pose_int8_openvino_model）。
+# 构建期从构建上下文 COPY 构建机已导出的 IR（python tools/export_model.py 提前导出）；
+# 同时下载 .pt 作为干净检出时的兜底（detect.py 会按优先级回退）。
+# 若构建上下文无 models/（干净检出），请先运行 python tools/export_model.py 再构建。
 RUN mkdir -p /app/models \
     && fetch() { \
          raw="$1"; out="$2"; \
          for pre in "https://ghproxy.com/" "https://ghproxy.net/" ""; do \
            if curl -fsSL -o "$out" "${pre}${raw}"; then return 0; fi; \
          done; return 1; } \
-    && fetch https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8n.pt /app/models/yolov8n.pt \
     && fetch https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8n-pose.pt /app/models/yolov8n-pose.pt
+
+# 构建机已导出的 OpenVINO IR（FP16 + 可选 INT8 混合精度）+ 本地 .pt
+# （覆盖上面下载的同名 .pt，内容一致）。INT8 目录随 models/ 一并拷贝，
+# 如需启用 INT8 推理，把 config.MODEL_PATH 指向 _int8_openvino_model 目录即可。
+COPY models /app/models
 
 COPY src /app/src
 COPY ui /app/ui

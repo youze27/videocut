@@ -64,12 +64,14 @@ class XiaomiParser(BaseTimestampParser):
         stem = file_path.stem
 
         # Format 2: 文件名内含完整时间戳，例如
-        # 00_20260820191511_20260820201731.mp4（开始_结束）
-        # 取第一个 14 位时间戳作为开始时间。
-        m = re.search(r"(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})", stem)
-        if m:
+        # 00_20260823200732_20260824065412.mp4（开始_结束）
+        # 双时间戳时取最后一个（结束时间=视频录制完成时间），
+        # 因为视频在结束时间才完整可用，用于 scan_process_hours 过滤更准确。
+        matches = re.findall(
+            r"(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})", stem)
+        if matches:
             try:
-                return datetime(*(int(x) for x in m.groups()))
+                return datetime(*(int(x) for x in matches[-1]))
             except ValueError:
                 pass
 

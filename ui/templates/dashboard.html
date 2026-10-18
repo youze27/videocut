@@ -8,8 +8,6 @@
   :root{
     --bg:#121418; --card:#1E2229; --fg:#e6e6e6; --muted:#9aa0aa;
     --line:#2a2f3a;
-    /* object labels */
-    --obj-person:#D32F2F; --obj-cat:#F57C00; --obj-dog:#0277BD;
     /* pose labels */
     --pose-lie:#C62828; --pose-stand:#2E7D32; --pose-sit:#0097A7;
     --pose-squat:#FBC02D; --pose-bend:#6A1B9A; --pose-unknown:#757575; --pose-none:#424242;
@@ -27,14 +25,33 @@
   .stat{background:#0f1115;border:1px solid var(--line);border-radius:8px;
     padding:6px 10px;font-size:12px;color:var(--muted);}
   .stat b{color:var(--fg);font-size:15px;margin-right:4px;}
-  .clock{margin-left:auto;font-variant-numeric:tabular-nums;font-size:14px;color:var(--muted);}
-  .actions{display:flex;gap:8px;flex-wrap:wrap;}
-  button{cursor:pointer;border:none;border-radius:6px;padding:8px 12px;
-    font-size:13px;font-weight:600;background:#2a2f3a;color:var(--fg);}
-  button.primary{background:#4f8cff;color:#fff;}
-  .toggle.on{background:#3ecf8e;color:#04210f;}
+  /* 处理中状态：强调边框 + 呼吸动画 */
+  .stat.proc-run{border-color:#4f8cff;background:rgba(79,140,255,.12);}
+  .stat.proc-run b{color:#7ab0ff;animation:procPulse 1.6s ease-in-out infinite;}
+  .stat.proc-done{border-color:#3ecf8e;background:rgba(62,207,142,.1);}
+  .stat.proc-done b{color:#3ecf8e;}
+  .stat.proc-error{border-color:#ff6b6b;background:rgba(255,107,107,.12);}
+  .stat.proc-error b{color:#ff8c8c;}
+  @keyframes procPulse{0%,100%{opacity:1;}50%{opacity:.45;}}
+  .clock{margin-left:auto;font-variant-numeric:tabular-nums;font-size:18px;color:var(--fg);font-weight:600;}
+  .actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
+  /* 顶部栏按钮统一样式 */
+  .actions button{cursor:pointer;border:1px solid var(--line);border-radius:6px;
+    padding:7px 12px;font-size:13px;font-weight:600;background:#0f1115;color:var(--fg);
+    transition:background .15s,border-color .15s;}
+  .actions button:hover{border-color:#4f8cff;}
+  .actions button.toggle.on{background:#3ecf8e;color:#04210f;border-color:#3ecf8e;}
+  /* 顶部处理状态可点击进入任务页 */
+  #s-proc{cursor:pointer;}
+  /* 筛选栏内的清空筛选按钮（间隔下拉框后面） */
+  .filter-actions{display:flex;gap:8px;align-items:center;margin-left:auto;}
+  .filter-actions button{cursor:pointer;border:1px solid var(--line);border-radius:6px;
+    padding:7px 12px;font-size:13px;font-weight:600;background:#0f1115;color:var(--fg);
+    transition:background .15s,border-color .15s;}
+  .filter-actions button:hover{border-color:#4f8cff;}
 
   /* ---------- 全屏模式（5秒无操作自动进入） ---------- */
+  body.kiosk{overflow:hidden;}
   body.kiosk header{padding:10px 24px;flex-wrap:wrap;}
   body.kiosk header h1{font-size:22px;}
   body.kiosk header .stat b{font-size:22px;}
@@ -121,20 +138,12 @@
   .ss-cell{position:relative;background:#000;overflow:hidden;
     border-radius:8px;cursor:pointer;}
   .ss-cell img{width:100%;height:100%;object-fit:cover;display:block;}
-  /* 水印标签：对象+姿态，左下角，背景加深确保可读 */
+  /* 水印标签：姿态，左下角，背景加深确保可读 */
   .ss-cell .wm-tags{position:absolute;left:0;bottom:0;display:flex;gap:3px;
     padding:3px 4px;}
   .ss-cell .wm-tags .tag{font-size:13px;font-weight:600;
     padding:2px 8px;border-radius:4px;color:#fff;
     background:rgba(0,0,0,.78);backdrop-filter:blur(2px);}
-  .ss-cell .wm-tags .tag.obj-person{background:rgba(211,47,47,.92);}
-  .ss-cell .wm-tags .tag.obj-cat{background:rgba(245,124,0,.92);}
-  .ss-cell .wm-tags .tag.obj-dog{background:rgba(2,119,189,.92);}
-  .ss-cell .wm-tags .tag.obj-horse{background:rgba(94,53,177,.92);}
-  .ss-cell .wm-tags .tag.obj-bird{background:rgba(255,152,0,.95);color:#000;}
-  .ss-cell .wm-tags .tag.obj-sheep{background:rgba(121,85,72,.92);}
-  .ss-cell .wm-tags .tag.obj-cow{background:rgba(63,81,181,.92);}
-  .ss-cell .wm-tags .tag.obj-unknown{background:rgba(117,117,117,.92);}
   .ss-cell .wm-tags .tag.pose-lie{background:rgba(198,40,40,.92);}
   .ss-cell .wm-tags .tag.pose-stand{background:rgba(46,125,50,.92);}
   .ss-cell .wm-tags .tag.pose-sit{background:rgba(0,151,167,.92);}
@@ -191,40 +200,21 @@
 <header>
   <h1>🏠 NAS 智慧家视觉检测事件监控大屏</h1>
   <div class="stats" id="stats">
-    <div class="stat"><b id="s-total">0</b>总事件</div>
     <div class="stat"><b id="s-person">0</b>人物</div>
-    <div class="stat"><b id="s-cat">0</b>猫咪</div>
-    <div class="stat"><b id="s-dog">0</b>狗狗</div>
-    <button class="toggle on" id="btn-scope" title="切换统计范围">全部</button>
+    <div class="stat" id="s-proc" title="点击查看任务运行进度 / 日志 / 历史">
+      <b id="s-proc-val">空闲</b><span id="s-proc-txt" style="font-size:11px;color:var(--muted);"></span>
+    </div>
   </div>
   <div class="clock" id="clock">--:--:--</div>
   <div class="actions">
-    <button class="primary" id="btn-refresh">手动刷新</button>
-    <button id="btn-clear">清空筛选</button>
-    <button class="toggle on" id="btn-auto">自动刷新: 30s</button>
-    <button id="btn-noobj">📹 无对象视频</button>
-    <button id="btn-config">⚙ 配置</button>
+    <button id="btn-noobj" title="无对象视频管理">📹 无对象视频</button>
+    <button class="toggle on" id="btn-pause" title="暂停自动刷新和自动全屏">⏸ 暂停全屏</button>
+    <button class="toggle" id="btn-fullscreen" title="切换浏览器全屏（同F11）">⛶ 全屏</button>
+    <button id="btn-config" title="配置">⚙ 配置</button>
   </div>
 </header>
 
 <div class="filters">
-  <div class="multi-select" id="ms-obj" data-f="obj">
-    <div class="ms-display">
-      <span class="ms-label">对象</span>
-      <span class="ms-selected">全部</span>
-      <span class="ms-arrow">▾</span>
-    </div>
-    <div class="ms-dropdown">
-      <label class="ms-option ms-all"><input type="checkbox" value="all" checked> <span>全部</span></label>
-      <label class="ms-option"><input type="checkbox" value="person"> <span>人物</span></label>
-      <label class="ms-option"><input type="checkbox" value="cat"> <span>猫咪</span></label>
-      <label class="ms-option"><input type="checkbox" value="dog"> <span>狗狗</span></label>
-      <label class="ms-option"><input type="checkbox" value="horse"> <span>马</span></label>
-      <label class="ms-option"><input type="checkbox" value="bird"> <span>鸡鸭</span></label>
-      <label class="ms-option"><input type="checkbox" value="sheep"> <span>羊</span></label>
-      <label class="ms-option"><input type="checkbox" value="cow"> <span>牛</span></label>
-    </div>
-  </div>
   <div class="multi-select" id="ms-pose" data-f="pose">
     <div class="ms-display">
       <span class="ms-label">姿态</span>
@@ -278,24 +268,28 @@
   </div>
   <div class="single-select" id="ss-interval" data-f="interval">
     <div class="ms-display">
-      <span class="ms-label">间隔</span>
-      <span class="ms-selected">5秒</span>
+      <span class="ms-label">轮播</span>
+      <span class="ms-selected">30秒</span>
       <span class="ms-arrow">▾</span>
     </div>
     <div class="ms-dropdown">
+      <div class="ms-option ms-single" data-v="0">不轮播</div>
       <div class="ms-option ms-single" data-v="2">2秒</div>
       <div class="ms-option ms-single" data-v="3">3秒</div>
-      <div class="ms-option ms-single active" data-v="5">5秒</div>
+      <div class="ms-option ms-single" data-v="5">5秒</div>
       <div class="ms-option ms-single" data-v="8">8秒</div>
       <div class="ms-option ms-single" data-v="10">10秒</div>
       <div class="ms-option ms-single" data-v="15">15秒</div>
-      <div class="ms-option ms-single" data-v="30">30秒</div>
+      <div class="ms-option ms-single active" data-v="30">30秒</div>
     </div>
+  </div>
+  <div class="filter-actions">
+    <button id="btn-clear" title="重置所有筛选条件">✕ 清空筛选</button>
   </div>
 </div>
 
 <main>
-  <div class="empty" id="empty" style="display:none">暂无事件数据</div>
+  <div class="empty" id="empty" style="display:none">暂无人物数据</div>
   <div class="slideshow" id="slideshow">
     <div class="ss-stage" id="ss-stage"></div>
     <div class="ss-bar">
@@ -314,13 +308,14 @@
       </select>
       <span class="lbl">间隔</span>
       <select id="ss-interval-2">
+        <option value="0">不轮播</option>
         <option value="2">2秒</option>
         <option value="3">3秒</option>
-        <option value="5" selected>5秒</option>
+        <option value="5">5秒</option>
         <option value="8">8秒</option>
         <option value="10">10秒</option>
         <option value="15">15秒</option>
-        <option value="30">30秒</option>
+        <option value="30" selected>30秒</option>
       </select>
       <button id="ss-prev">◀ 上一组</button>
       <button id="ss-pause">⏸ 暂停</button>
@@ -380,12 +375,6 @@
 </div>
 
 <script>
-const OBJ = {
-  person:{t:"人物",c:"obj-person"}, cat:{t:"猫咪",c:"obj-cat"},
-  dog:{t:"狗狗",c:"obj-dog"}, horse:{t:"马",c:"obj-horse"},
-  bird:{t:"鸡鸭",c:"obj-bird"}, sheep:{t:"羊",c:"obj-sheep"},
-  cow:{t:"牛",c:"obj-cow"}, unknown:{t:"未知",c:"obj-unknown"}
-};
 const POSE = {
   // 兼容旧数据：fall → lie
   lie:{t:"躺",c:"pose-lie"}, fall:{t:"躺",c:"pose-lie"},
@@ -396,13 +385,13 @@ const POSE = {
 };
 
 let ALL = [];          // current events from server
-// obj/pose 用 Set 支持多选；time 仍为单值
-const filter = {obj:new Set(["all"]), pose:new Set(["all"]), time:"all"};
+// pose 用 Set 支持多选；time 仍为单值（对象固定为人物，无筛选）
+const filter = {pose:new Set(["all"]), time:"all"};
 let autoRefresh = true;
 let autoTimer = null;
 
 // 轮播状态（首页唯一展示方式）
-let ssInterval = 5;          // 轮播间隔（秒）
+let ssInterval = 30;         // 轮播间隔（秒），0=不轮播
 let ssGrid = "4x5";          // 轮播布局 "RxC"，默认 4x5
 let ssIndex = 0;             // 轮播当前索引
 let ssPaused = false;
@@ -424,8 +413,7 @@ function applyFilter(list){
   // 旧数据归一化：fall → lie
   const normPose = p => (p === "fall") ? "lie" : p;
   const filtered = list.filter(e=>{
-    // 多选：未选"全部"时，对象类型需在选中集合内
-    if(!filter.obj.has("all") && !filter.obj.has(e.objType)) return false;
+    // 姿态多选：未选"全部"时，姿态需在选中集合内（对象固定为人物，不过滤）
     if(!filter.pose.has("all") && !filter.pose.has(normPose(e.poseType))) return false;
     if(filter.time!=="all"){
       // 用服务器返回的 ts（Unix 秒），避免时区偏差
@@ -450,24 +438,23 @@ function getDisplayList(){
   return filtered.length > MAX_DISPLAY ? filtered.slice(0, MAX_DISPLAY) : filtered;
 }
 
-// 轮播单元 HTML：卡片样式（水印标签 + 日期），文字背景加深
+// 轮播单元 HTML：卡片样式（姿态标签 + 日期），文字背景加深
 function cellHtml(e){
-  const o = OBJ[e.objType]||OBJ.unknown;
   const p = POSE[e.poseType]||POSE.unknown;
   const img = e.jpg ? `/snap/${e.jpg}` : "";
   return `<div class="ss-cell" data-jpg="${e.jpg||""}"
                data-source="${e.sourceVideo||""}"
                data-start="${e.startTime||0}"
-               data-time="${e.timeFull}" data-obj="${o.t}" data-pose="${p.t}">
+               data-time="${e.timeFull}" data-pose="${p.t}">
     <img loading="lazy" src="${img}" alt="">
     <div class="wm-date">${e.timeShort}</div>
-    <div class="wm-tags">${tag(o.c,o.t)} ${tag(p.c,p.t)}</div>
+    <div class="wm-tags">${tag(p.c,p.t)}</div>
   </div>`;
 }
 
 function renderSlideshow(filtered){
   if(filtered.length === 0){
-    $("ss-stage").innerHTML = '<div style="color:var(--muted);font-size:16px;display:flex;align-items:center;justify-content:center;height:100%;">暂无事件</div>';
+    $("ss-stage").innerHTML = '<div style="color:var(--muted);font-size:16px;display:flex;align-items:center;justify-content:center;height:100%;">暂无人物</div>';
     $("ss-counter").textContent = "";
     return;
   }
@@ -485,7 +472,7 @@ function renderSlideshow(filtered){
   stage.innerHTML = slice.map(cellHtml).join("");
 
   const more = _totalFiltered > filtered.length;
-  $("ss-counter").textContent = `第 ${ssIndex+1}/${pages} 页（共 ${_totalFiltered} 个事件${more ? `，仅展示最新 ${filtered.length}` : ""}，每页 ${perPage} 张）`;
+  $("ss-counter").textContent = `第 ${ssIndex+1}/${pages} 页（共 ${_totalFiltered} 个人物${more ? `，仅展示最新 ${filtered.length}` : ""}，每页 ${perPage} 张）`;
 }
 
 function render(){
@@ -499,7 +486,11 @@ function render(){
 // ---------- 轮播控制 ----------
 function startSlideshow(){
   stopSlideshow();
-  if(ssPaused) return;
+  // 不轮播 / 暂停：只停在当前页，不启动定时器
+  if(ssPaused || ssInterval === 0){
+    $("ss-progress-bar").style.width = "0%";
+    return;
+  }
   let elapsed = 0;
   const bar = $("ss-progress-bar");
   bar.style.width = "0%";
@@ -542,15 +533,55 @@ let statScope = "all";   // 统计范围：all / today
 function loadData(){
   fetch("/api/events?scope=" + statScope).then(r=>r.json()).then(j=>{
     ALL = j.events||[];
-    const s = j.stats||{total:0,person:0,cat:0,dog:0};
-    $("s-total").textContent=s.total;
+    const s = j.stats||{person:0};
     $("s-person").textContent=s.person;
-    $("s-cat").textContent=s.cat;
-    $("s-dog").textContent=s.dog;
     render();
     // 网格截图由后端 pipeline 完成后自动拼接当天快照（grid_latest.jpg）
   }).catch(()=>{});
 }
+
+// ---- 实时处理状态指示（轮询 /api/status）----
+let _procTimer = null;
+function loadProcStatus(){
+  fetch("/api/status").then(r=>r.json()).then(j=>{
+    const box = $("s-proc");
+    const val = $("s-proc-val");
+    const txt = $("s-proc-txt");
+    const stage = (j.progress||{}).stage || "idle";
+    if(!j.running){
+      if(stage === "done"){
+        val.textContent = "已完成";
+        box.className = "stat proc-done";
+      } else if(stage === "error"){
+        val.textContent = "出错";
+        box.className = "stat proc-error";
+      } else {
+        val.textContent = "空闲";
+        box.className = "stat";
+      }
+      txt.textContent = "";
+      return;
+    }
+    box.className = "stat proc-run";
+    const stageLabels = {scan:'扫描',video:'视频',extract:'抽帧',extract_done:'抽帧完成',
+                         detect:'识别中',detect_done:'识别完成',pose:'姿态识别',
+                         snapshot:'保存快照',done:'完成',error:'出错'};
+    const label = stageLabels[stage] || stage;
+    const agg = j.agg || {};
+    let info = label;
+    if(agg.total_videos > 0){
+      const done = (agg.processed_videos||0) + (agg.skipped||0);
+      info += ` ${done}/${agg.total_videos}个视频`;
+    }
+    if(agg.total_snapshots > 0) info += ` · ${agg.total_snapshots}快照`;
+    val.textContent = label;
+    txt.textContent = info;
+  }).catch(()=>{});
+}
+loadProcStatus();
+_procTimer = setInterval(loadProcStatus, 5000);
+// 顶部处理状态：点击进入任务页（进度 / 日志 / 历史）
+$("s-proc").addEventListener("click", () => { window.location.href = "/tasks"; });
 
 // ---- filters ----
 // ---- 多选下拉框（对象/姿态）----
@@ -627,10 +658,8 @@ document.addEventListener("click", e=>{
   }
 });
 
-$("btn-refresh").addEventListener("click", loadData);
 $("btn-clear").addEventListener("click", ()=>{
   // 重置多选下拉为"全部"
-  filter.obj.clear(); filter.obj.add("all");
   filter.pose.clear(); filter.pose.add("all");
   filter.time="all";
   document.querySelectorAll(".multi-select").forEach(ms=>{
@@ -643,21 +672,27 @@ $("btn-clear").addEventListener("click", ()=>{
   syncSingleSelect("ss-time", "all");
   render();
 });
-$("btn-auto").addEventListener("click", ()=>{
-  autoRefresh=!autoRefresh;
-  const b=$("btn-auto");
-  b.classList.toggle("on",autoRefresh);
-  b.textContent = autoRefresh ? "自动刷新: 30s" : "自动刷新: 关闭";
-  if(autoRefresh){ autoTimer=setInterval(loadData,30000); }
-  else { clearInterval(autoTimer); autoTimer=null; }
-});
-// 统计范围切换：全部 / 今天
-$("btn-scope").addEventListener("click", ()=>{
-  statScope = statScope === "all" ? "today" : "all";
-  const b = $("btn-scope");
-  b.textContent = statScope === "all" ? "全部" : "今天";
-  b.classList.toggle("on", statScope === "all");
-  loadData();
+// 暂停/继续：暂停时停止自动刷新 + 阻止自动全屏
+let paused = false;
+$("btn-pause").addEventListener("click", ()=>{
+  paused = !paused;
+  const b = $("btn-pause");
+  if(paused){
+    // 暂停：停止自动刷新计时器 + 清除自动全屏计时器
+    if(autoTimer){ clearInterval(autoTimer); autoTimer = null; }
+    if(_idleTimer){ clearTimeout(_idleTimer); _idleTimer = null; }
+    autoRefresh = false;
+    b.textContent = "▶ 继续";
+    b.classList.remove("on");
+  } else {
+    // 继续：恢复自动刷新 + 恢复自动全屏计时
+    autoRefresh = true;
+    autoTimer = setInterval(loadData, 30000);
+    b.textContent = "⏸ 暂停全屏";
+    b.classList.add("on");
+    resetIdleTimer();
+    loadData();
+  }
 });
 // ---- 通用单选下拉框初始化 ----
 // 为任意 .single-select 绑定开合 + 选项点击，回调返回选中值
@@ -735,7 +770,7 @@ function openModal(card){
   const jpg = card.dataset.jpg;
   const sourceVideo = card.dataset.source;
   const startTime = parseFloat(card.dataset.start || 0);
-  const title = `${card.dataset.time} ｜【${card.dataset.obj}】【${card.dataset.pose}】`;
+  const title = `${card.dataset.time} ｜【${card.dataset.pose}】`;
   $("m-title").textContent = title;
   const body = $("m-body");
   // 优先播放裁剪片段（与快照同名的 .mp4），不存在则降级到源视频
@@ -803,7 +838,7 @@ function closeConfig(){
   $("cfg-frame").src = "";   // release the iframe
   $("cfg-modal").classList.add("hidden");
 }
-$("btn-config").addEventListener("click", openConfig);
+$("btn-config").addEventListener("click", () => { window.location.href = "/config"; });
 $("cfg-close").addEventListener("click", closeConfig);
 $("cfg-mask").addEventListener("click", closeConfig);
 
@@ -937,20 +972,52 @@ autoTimer=setInterval(loadData,30000);
 let _idleTimer = null;
 const KIOSK_DELAY = 5000;  // 5秒无操作
 
+function syncFullscreenBtn(){
+  const b = $("btn-fullscreen");
+  if(!b) return;
+  const inFs = !!(document.fullscreenElement || document.webkitFullscreenElement);
+  b.textContent = inFs ? "⤢ 退出全屏" : "⛶ 全屏";
+  b.classList.toggle("on", inFs);
+}
+
 function enterKiosk(){
   if(document.body.classList.contains('kiosk')) return;
   document.body.classList.add('kiosk');
-  // 尝试请求浏览器全屏（需用户交互后才能生效，静默失败也无妨）
-  try{ document.documentElement.requestFullscreen?.(); }catch(e){}
+  // 尝试请求浏览器全屏（等同F11，需用户交互令牌，静默失败则仅 CSS 全屏）
+  const el = document.documentElement;
+  try{ (el.requestFullscreen || el.webkitRequestFullscreen)?.call(el); }catch(e){}
+  syncFullscreenBtn();
   // 全屏模式下隐藏筛选条/配置栏/退出按钮，只保留顶部栏 + 轮播（由 CSS 控制）
   render();
 }
 
 function exitKiosk(){
   document.body.classList.remove('kiosk');
-  try{ document.exitFullscreen?.(); }catch(e){}
+  try{ (document.exitFullscreen || document.webkitExitFullscreen)?.call(document); }catch(e){}
+  syncFullscreenBtn();
   resetIdleTimer();
 }
+
+// 全屏按钮：点击切换浏览器全屏（等同F11，点击触发有用户手势令牌，最可靠）
+$("btn-fullscreen").addEventListener("click", ()=>{
+  const inFs = !!(document.fullscreenElement || document.webkitFullscreenElement);
+  const el = document.documentElement;
+  if(inFs){
+    (document.exitFullscreen || document.webkitExitFullscreen)?.call(document);
+  } else {
+    (el.requestFullscreen || el.webkitRequestFullscreen)?.call(el);
+  }
+});
+
+// 监听浏览器全屏状态变化（F11 / Esc / API 触发都同步 kiosk class）
+["fullscreenchange","webkitfullscreenchange"].forEach(ev=>{
+  document.addEventListener(ev, ()=>{
+    const inFs = !!(document.fullscreenElement || document.webkitFullscreenElement);
+    document.body.classList.toggle("kiosk", inFs);
+    syncFullscreenBtn();
+    if(inFs) render();
+  });
+});
 
 function resetIdleTimer(){
   if(_idleTimer) clearTimeout(_idleTimer);
@@ -960,8 +1027,12 @@ function resetIdleTimer(){
 // 监听用户操作（鼠标移动、点击、键盘、滚动、触摸）
 ['mousemove','click','keydown','scroll','touchstart'].forEach(ev=>{
   window.addEventListener(ev, ()=>{
+    if(paused) return;  // 暂停状态下不响应自动全屏逻辑
     if(document.body.classList.contains('kiosk')){
-      // 全屏模式下任意操作退出全屏
+      // 浏览器真全屏（F11效果）下：鼠标移动/滚动不退出（便于查看轮播控制条），
+      // 只有 click/keydown/touch 才退出；CSS kiosk fallback 下任意操作退出
+      const inFs = !!(document.fullscreenElement || document.webkitFullscreenElement);
+      if(inFs && (ev === 'mousemove' || ev === 'scroll')) return;
       exitKiosk();
     } else {
       resetIdleTimer();
@@ -971,6 +1042,17 @@ function resetIdleTimer(){
 
 // 启动倒计时
 resetIdleTimer();
+
+// 首次点击自动进入真全屏（F11 效果）。
+// 浏览器安全策略要求 requestFullscreen 必须在用户手势中调用，
+// 用户首次点击页面后建立"全屏授权"，之后 enterKiosk 的 requestFullscreen 才能成功。
+let _firstClickFs = true;
+window.addEventListener('click', ()=>{
+  if(!_firstClickFs) return;
+  _firstClickFs = false;
+  const el = document.documentElement;
+  try{ (el.requestFullscreen || el.webkitRequestFullscreen)?.call(el); }catch(e){}
+}, {once:false});
 </script>
 </body>
 </html>

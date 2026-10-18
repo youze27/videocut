@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>videocut 配置</title>
+<style>
+  :root { --bg:#0f1115; --card:#1a1d24; --fg:#e6e6e6; --muted:#9aa0aa;
+          --accent:#4f8cff; --ok:#3ecf8e; --bad:#ff6b6b; --line:#2a2f3a; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;
+         background:var(--bg); color:var(--fg); }
+  header { padding:12px 20px; background:var(--card); display:flex;
+           align-items:center; gap:12px; flex-wrap:wrap; border-bottom:1px solid var(--line); }
+  header h1 { font-size:16px; margin:0; }
+  .badge { font-size:12px; padding:3px 8px; border-radius:10px;
+           background:#2a2f3a; color:var(--muted); }
+  .badge.run { background:rgba(79,140,255,.2); color:var(--accent); }
+
+  main { padding:16px; display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .card { background:var(--card); border-radius:10px; padding:14px; }
+  .card.full { grid-column:1 / -1; }
+  .section-title { font-size:12px; text-transform:uppercase; letter-spacing:.06em;
+                   color:var(--accent); margin:0 0 10px; font-weight:600;
+                   border-bottom:1px solid var(--line); padding-bottom:6px; }
+
+  label { display:block; font-size:11px; color:var(--muted); margin:6px 0 3px; }
+  input, select { width:100%; padding:6px 8px; border-radius:5px; border:1px solid var(--line);
+                  background:#0f1115; color:var(--fg); font-size:12px; }
+  input:focus, select:focus { outline:none; border-color:var(--accent); }
+  .row { display:flex; gap:8px; }
+  .row > * { flex:1; }
+  .row.tight { gap:6px; }
+
+  button { cursor:pointer; border:none; border-radius:5px; padding:7px 12px;
+           font-size:12px; font-weight:600; }
+  .sel-on { border-color:var(--ok) !important; box-shadow:0 0 0 1px var(--ok);
+            color:var(--ok) !important; font-weight:600; }
+  .sel-off { border-color:#3a2a2a; color:var(--muted); }
+  .primary { background:var(--accent); color:#fff; }
+  .primary:hover { background:#3a7ae8; }
+  .ghost { background:#2a2f3a; color:var(--fg); }
+  .ghost:hover { background:#343a48; }
+  .danger { color:#e74c3c; border:1px solid #e74c3c; background:transparent; }
+
+  .grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .grid-3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; }
+
+  .hint { font-size:11px; color:var(--muted); padding:5px 8px;
+          background:#0b0d11; border-radius:5px; margin:4px 0; line-height:1.4; }
+
+  .actions-bar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .actions-bar .scan-stat { font-size:11px; color:var(--muted); margin-left:auto; }
+
+  .browse { font-size:11px; color:var(--accent); cursor:pointer; user-select:none; margin-top:2px; display:inline-block; }
+  .dirlist { max-height:120px; overflow:auto; background:#0b0d11; border-radius:5px;
+             padding:4px; font-size:11px; display:none; margin-top:2px; }
+  .dirlist div { padding:2px 5px; cursor:pointer; border-radius:3px; }
+  .dirlist div:hover { background:#1d2230; }
+
+  .is-item { background:#0b0d11; border-radius:6px; padding:8px; margin-bottom:6px; }
+
+  a { color:var(--accent); }
+  code { background:#0b0d11; padding:1px 5px; border-radius:3px; font-size:11px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>videocut 配置</h1>
+  <span class="badge">输出: <span id="outdir"></span></span>
+  <a class="badge" href="/" target="_top" style="text-decoration:none;">监控事件大屏 →</a>
+  <a class="badge" href="/tasks" target="_top" style="text-decoration:none;">📊 任务 →</a>
+</header>
+
+<main>
+  <!-- ===== 输入输出 ===== -->
+  <div class="card">
+    <p class="section-title">📁 输入输出</p>
+    <label>输入源（每个摄像头独立配置路径与品牌）</label>
+    <div id="input_sources_container"></div>
+    <button class="ghost" onclick="addInputSource()" style="margin-top:4px;padding:5px 10px;font-size:11px;">+ 添加摄像头</button>
+
+    <div class="grid-2" style="margin-top:8px;">
+      <div>
+        <label>输出文件夹</label>
+        <input id="output_dir" />
+        <div class="browse" onclick="toggleBrowse('output_dir')">浏览…</div>
+        <div class="dirlist" id="dl_output_dir"></div>
+      </div>
+      <div>
+        <label>工作目录（临时文件）</label>
+        <input id="work_dir" />
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 检测参数 ===== -->
+  <div class="card">
+    <p class="section-title">🎯 检测参数</p>
+    <div class="grid-3">
+      <div>
+        <label>检测置信度</label>
+        <input id="det_conf" type="number" step="0.05">
+      </div>
+      <div>
+        <label>抽帧间隔(秒)</label>
+        <input id="det_interval" type="number" step="0.5">
+      </div>
+      <div>
+        <label>去重阈值</label>
+        <input id="similarity_threshold" type="number">
+      </div>
+    </div>
+    <div>
+      <label>线程数</label>
+      <select id="worker_threads">
+        <option value="auto">自动（按CPU核心）</option>
+        <option value="1">1（单线程）</option>
+        <option value="2">2</option>
+        <option value="3">3</option>
+        <option value="4">4</option>
+      </select>
+    </div>
+    <div class="grid-2" style="margin-top:6px;">
+      <div>
+        <label>只扫当天</label>
+        <select id="scan_today_only" onchange="applyToggleHighlight()">
+          <option value="true">开启</option>
+          <option value="false">关闭（扫全部）</option>
+        </select>
+      </div>
+      <div>
+        <label>处理最近时段</label>
+        <select id="scan_process_hours">
+          <option value="1">最近 1 小时</option>
+          <option value="2">最近 2 小时</option>
+          <option value="4">最近 4 小时</option>
+          <option value="6">最近 6 小时</option>
+          <option value="12">最近 12 小时</option>
+          <option value="24">最近 24 小时（全天）</option>
+          <option value="0">不限制（当天全部）</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 自动化调度 ===== -->
+  <div class="card">
+    <p class="section-title">⏰ 自动化调度</p>
+    <div class="grid-2">
+      <div>
+        <label>定时自动运行</label>
+        <select id="schedule_enabled" onchange="applyToggleHighlight()">
+          <option value="true">开启</option>
+          <option value="false">关闭</option>
+        </select>
+      </div>
+      <div>
+        <label>定时间隔(小时)</label>
+        <input id="schedule_interval_hours" type="number" min="0.5" step="0.5">
+      </div>
+    </div>
+    <div class="grid-3" style="margin-top:6px;">
+      <div>
+        <label>每日清理过期帧</label>
+        <select id="cleanup_enabled" onchange="applyToggleHighlight()">
+          <option value="true">开启</option>
+          <option value="false">关闭</option>
+        </select>
+      </div>
+      <div>
+        <label>清理时间</label>
+        <input id="cleanup_time" type="time" />
+      </div>
+      <div>
+        <label>帧保留天数</label>
+        <input id="frame_retention_days" type="number" min="0">
+      </div>
+    </div>
+    <div style="margin-top:6px;">
+      <label>任务最长运行时长（小时，超过自动杀死，0=不限制）</label>
+      <input id="max_task_hours" type="number" min="0" step="1">
+    </div>
+    <button class="ghost" onclick="cleanupNow()" style="margin-top:8px;padding:5px 10px;font-size:11px;">🗑 立即清理</button>
+  </div>
+
+  <!-- ===== 快照输出 ===== -->
+  <div class="card">
+    <p class="section-title">🖼 快照输出</p>
+    <div class="grid-3">
+      <div>
+        <label>快照比例(宽:高)</label>
+        <input id="snapshot_ratio" placeholder="3:2">
+      </div>
+      <div>
+        <label>快照宽度(px)</label>
+        <input id="snapshot_width" type="number">
+      </div>
+      <div>
+        <label>裁剪边距</label>
+        <input id="snapshot_padding" type="number" step="0.05">
+      </div>
+    </div>
+    <div class="grid-2" style="margin-top:6px;">
+      <div>
+        <label>网格截图列数</label>
+        <input id="grid_cols" type="number" min="1" max="12">
+      </div>
+      <div>
+        <label>网格截图行数</label>
+        <input id="grid_rows" type="number" min="1" max="12">
+      </div>
+    </div>
+    <div class="hint">
+      每次 pipeline 运行完自动生成网格截图（后端生成，无需浏览器开着）。两个版本访问路径如下：
+      <div style="margin-top:6px;display:flex;flex-direction:column;gap:6px;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="color:var(--ok);font-weight:600;min-width:96px;">原始高清</span>
+          <code id="grid_url_origin" style="flex:1;">/api/grid_latest</code>
+          <button class="ghost" onclick="window.open('/api/grid_latest','_blank')"
+                  style="padding:3px 8px;font-size:10px;">查看</button>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="color:var(--accent);font-weight:600;min-width:96px;">压缩版(KB)</span>
+          <code id="grid_url_comp" style="flex:1;">/api/grid_compressed</code>
+          <button class="ghost" onclick="window.open('/api/grid_compressed','_blank')"
+                  style="padding:3px 8px;font-size:10px;">查看</button>
+        </div>
+      </div>
+      <div id="grid_info_box" style="margin-top:8px;font-size:11px;color:var(--muted);"></div>
+    </div>
+  </div>
+
+  <!-- ===== 操作按钮（跨两列） ===== -->
+  <div class="card full">
+    <div class="actions-bar">
+      <button class="primary" onclick="saveConfig()">💾 保存配置</button>
+      <button class="ghost" onclick="runNow()">▶ 立即运行并查看进度</button>
+      <button class="ghost" onclick="scanVideos()">🔍 扫描测试</button>
+      <a class="ghost" href="/tasks" target="_top" style="text-decoration:none;padding:7px 12px;border-radius:5px;font-size:12px;font-weight:600;display:inline-block;">📊 查看任务</a>
+      <span id="scanstat" class="scan-stat"></span>
+    </div>
+    <div id="scanresult" style="margin-top:8px;max-height:180px;overflow:auto;font-size:11px;display:none;"></div>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let _inputSources = [];
+
+function fmtDuration(sec){
+  if (sec == null || isNaN(sec)) return '-';
+  sec = Math.floor(sec);
+  if (sec < 60) return sec + 's';
+  const m = Math.floor(sec / 60), s = sec % 60;
+  if (m < 60) return m + 'm' + s + 's';
+  const h = Math.floor(m / 60), mm = m % 60;
+  return h + 'h' + mm + 'm';
+}
+
+function renderInputSources() {
+  const container = $('input_sources_container');
+  container.innerHTML = '';
+  _inputSources.forEach((src, i) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'is-item';
+    wrap.innerHTML = `
+      <div class="row tight" style="align-items:flex-end;">
+        <div style="flex:1;">
+          <label>路径 ${i+1}</label>
+          <input class="is-path" id="is_path_${i}" value="${src.path||''}" placeholder="/host/cam1"
+                 oninput="updateInputSource(${i}, 'path', this.value)">
+        </div>
+        <div style="flex:0 0 110px;">
+          <label>品牌</label>
+          <select class="is-brand" onchange="updateInputSource(${i}, 'brand', this.value)">
+            <option value="auto" ${src.brand==='auto'?'selected':''}>自动</option>
+            <option value="xiaomi" ${src.brand==='xiaomi'?'selected':''}>小米</option>
+            <option value="hikvision" ${src.brand==='hikvision'?'selected':''}>海康</option>
+            <option value="dahua" ${src.brand==='dahua'?'selected':''}>大华</option>
+            <option value="generic" ${src.brand==='generic'?'selected':''}>通用</option>
+          </select>
+        </div>
+        <button class="ghost" style="flex:0 0 auto;padding:6px 9px;" title="浏览目录"
+                onclick="browseInputSource(${i})">浏览</button>
+        <button class="danger" style="flex:0 0 auto;padding:6px 10px;"
+                onclick="removeInputSource(${i})" title="删除">×</button>
+      </div>
+      <div class="dirlist" id="is_dl_${i}"></div>
+    `;
+    container.appendChild(wrap);
+  });
+}
+
+async function browseInputSource(idx) {
+  const dl = $('is_dl_' + idx);
+  if (dl.style.display === 'block') { dl.style.display='none'; return; }
+  await _renderBrowseList(idx, $('is_path_' + idx).value || '/host');
+}
+
+async function _renderBrowseList(idx, path) {
+  const dl = $('is_dl_' + idx);
+  dl.style.display = 'block';
+  dl.innerHTML = '<div style="color:var(--muted);">加载中…</div>';
+  try {
+    const r = await fetch('/api/browse?path=' + encodeURIComponent(path));
+    const j = await r.json();
+    if (!j.exists) {
+      dl.innerHTML = '<div style="color:var(--bad);">目录不存在</div>';
+      return;
+    }
+    const enc = p => encodeURIComponent(p);
+    let html = `<div style="color:var(--accent);padding:3px 5px;border-bottom:1px solid #1d2230;
+                margin-bottom:2px;font-weight:600;">当前: ${j.path}</div>`;
+    if (!j.is_root) {
+      const norm = j.path.replace(/\\/g,'/').replace(/\/$/,'');
+      const parts = norm.split('/');
+      let parent;
+      if (parts.length <= 1) {
+        parent = '/host';
+      } else {
+        parent = parts.slice(0, -1).join('/') || '/';
+        if (/^[A-Z]:$/i.test(parent)) parent = parent + '/';
+      }
+      if (parent !== j.path) {
+        html += `<div class="br-item" data-p="${enc(parent)}" data-idx="${idx}"
+                 style="color:var(--muted);cursor:pointer;">↩ ..</div>`;
+      }
+    }
+    if (j.dirs.length === 0) {
+      html += '<div style="color:var(--muted);">（无子目录）</div>';
+    } else {
+      j.dirs.forEach(d => {
+        const name = d.replace(/\\/g,'/').replace(/\/$/,'').split('/').pop() || d;
+        html += `<div class="br-item" data-p="${enc(d)}" data-idx="${idx}"
+                 style="cursor:pointer;padding:2px 5px;">📁 ${name}</div>`;
+      });
+    }
+    if (!j.is_root) {
+      html += `<div class="br-pick" data-p="${enc(j.path)}" data-idx="${idx}"
+               style="color:var(--ok);border-top:1px solid #1d2230;margin-top:2px;
+               padding-top:4px;font-weight:600;cursor:pointer;">✓ 使用此目录</div>`;
+    }
+    dl.innerHTML = html;
+    dl.querySelectorAll('.br-item').forEach(el => {
+      el.addEventListener('click', () => {
+        _renderBrowseList(parseInt(el.dataset.idx), decodeURIComponent(el.dataset.p));
+      });
+    });
+    dl.querySelectorAll('.br-pick').forEach(el => {
+      el.addEventListener('click', () => {
+        pickInputSourceDir(parseInt(el.dataset.idx), decodeURIComponent(el.dataset.p));
+      });
+    });
+  } catch (e) {
+    dl.innerHTML = '<div style="color:var(--bad);">出错: ' + e + '</div>';
+  }
+}
+
+function pickInputSourceDir(idx, d) {
+  if (_inputSources[idx]) _inputSources[idx].path = d;
+  const inp = $('is_path_' + idx);
+  if (inp) inp.value = d;
+  $('is_dl_' + idx).style.display = 'none';
+}
+
+function addInputSource() {
+  _inputSources.push({path: '', brand: 'auto'});
+  renderInputSources();
+}
+
+function removeInputSource(idx) {
+  _inputSources.splice(idx, 1);
+  renderInputSources();
+}
+
+function updateInputSource(idx, field, value) {
+  if (_inputSources[idx]) _inputSources[idx][field] = value;
+}
+
+async function loadConfig() {
+  const r = await fetch('/api/config'); const c = await r.json();
+  _inputSources = (c.input_sources && c.input_sources.length)
+    ? c.input_sources.map(s => ({path: s.path||'', brand: s.brand||'auto'}))
+    : [{path: c.input_dir || '/host', brand: c.camera_brand || 'auto'}];
+  renderInputSources();
+  for (const k of Object.keys(c)) {
+    if (k === 'input_sources' || k === 'input_dir' || k === 'camera_brand') continue;
+    const el = $(k);
+    if (!el) continue;
+    if (k === 'schedule_enabled' ||
+        k === 'cleanup_enabled' || k === 'scan_today_only') {
+      el.value = c[k] ? 'true' : 'false';
+    } else {
+      el.value = c[k];
+    }
+  }
+  $('outdir').textContent = c.output_dir;
+  applyToggleHighlight();
+  loadGridInfo();
+}
+
+async function loadGridInfo() {
+  const box = $('grid_info_box');
+  if (!box) return;
+  const od = $('outdir').textContent || '';
+  try {
+    const r = await fetch('/api/grid_info'); const j = await r.json();
+    if (!j.exists) {
+      box.innerHTML = '当前尚无网格截图（运行一次任务后自动生成）';
+      return;
+    }
+    let html = `高清版：<b style="color:var(--ok);">${j.size_kb} KB</b>`
+      + (j.updated ? ` · 更新 ${j.updated}` : '');
+    if (j.compressed_size_kb != null) {
+      html += `<br>压缩版：<b style="color:var(--accent);">${j.compressed_size_kb} KB</b>`
+        + (j.compressed_updated ? ` · 更新 ${j.compressed_updated}` : '');
+    }
+    html += `<br>文件：<code>${od}/grid_latest.jpg</code>`
+      + (j.compressed_size_kb != null
+         ? ` 、<code>${od}/grid_latest_compressed.jpg</code>` : '');
+    box.innerHTML = html;
+  } catch (e) {
+    box.textContent = '无法获取网格截图信息';
+  }
+}
+
+function applyToggleHighlight() {
+  ['schedule_enabled','cleanup_enabled','scan_today_only']
+    .forEach(id => {
+      const el = $(id);
+      if (!el) return;
+      if (el.value === 'true') {
+        el.classList.add('sel-on');
+        el.classList.remove('sel-off');
+      } else {
+        el.classList.add('sel-off');
+        el.classList.remove('sel-on');
+      }
+    });
+}
+
+async function saveConfig(quiet) {
+  const sources = _inputSources.filter(s => s.path && s.path.trim());
+  if (sources.length === 0) { alert('请至少添加一个输入文件夹'); return false; }
+  const c = {input_sources: sources};
+  ['output_dir','work_dir',
+   'det_conf','det_interval','similarity_threshold',
+   'snapshot_ratio','snapshot_width','snapshot_padding',
+   'schedule_interval_hours',
+   'worker_threads','frame_retention_days','cleanup_time',
+   'grid_cols','grid_rows','max_task_hours',
+   'scan_process_hours'
+  ].forEach(k => { c[k] = $(k).value; });
+  c.schedule_enabled = $('schedule_enabled').value === 'true';
+  c.cleanup_enabled = $('cleanup_enabled').value === 'true';
+  c.scan_today_only = $('scan_today_only').value === 'true';
+  c.scan_mode = 'smart';
+  c.date_source = 'either';
+  c.camera_brand = sources[0].brand;
+  try {
+    await fetch('/api/config', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(c)});
+  } catch (e) {
+    alert('保存失败: ' + e.message);
+    return false;
+  }
+  $('outdir').textContent = c.output_dir;
+  if (!quiet) alert('已保存');
+  return true;
+}
+
+async function runNow() {
+  const ok = await saveConfig(true);
+  if (!ok) return;
+  const r = await fetch('/api/run', {method:'POST'});
+  const j = await r.json();
+  if (!j.ok) { alert(j.msg || '运行失败'); return; }
+  // 跳转到任务页，立即查看实时进度
+  window.location.href = '/tasks';
+}
+
+async function cleanupNow() {
+  const r = await fetch('/api/cleanup', {method:'POST'});
+  const j = await r.json();
+  if (j.ok) {
+    alert('清理完成：删除 ' + (j.result.deleted || 0) + ' 个过期帧文件');
+  } else {
+    alert('清理失败：' + (j.msg || '未知错误'));
+  }
+}
+
+async function scanVideos() {
+  const sources = _inputSources.filter(s => s.path && s.path.trim());
+  if (sources.length === 0) { alert('请先添加输入文件夹'); return; }
+  $('scanstat').textContent = '扫描中…';
+  $('scanresult').style.display = 'none';
+  try {
+    const results = await Promise.all(sources.map(src =>
+      fetch('/api/scan?input_dir=' + encodeURIComponent(src.path) +
+            '&brand=' + encodeURIComponent(src.brand || 'auto'))
+        .then(r => r.json())
+        .then(j => ({src, j}))
+    ));
+    let totalAll = 0, todayAll = 0;
+    let html = '';
+    results.forEach(({src, j}) => {
+      if (!j.exists) {
+        html += `<div style="padding:5px 8px;border-bottom:1px solid #1d2230;color:var(--bad);">` +
+                `[${src.brand}] ${j.input_dir} — 目录不存在</div>`;
+        return;
+      }
+      totalAll += j.total; todayAll += j.today;
+      const brandLabel = {auto:'自动',xiaomi:'小米',hikvision:'海康',dahua:'大华',generic:'通用'}[src.brand] || src.brand;
+      html += `<div style="padding:5px 8px;background:#1d2230;border-radius:4px;margin-bottom:4px;">` +
+              `<b style="color:var(--accent);">${brandLabel}</b> · ${j.input_dir} ` +
+              `— 共 ${j.total} 个，今天 ${j.today} 个</div>`;
+      html += (j.videos||[]).map(v =>
+        `<div style="padding:2px 4px 2px 14px;border-bottom:1px solid #1d2230;">` +
+        `${v.name} — ${v.date || '<span style="color:var(--bad)">日期解析失败</span>'} ` +
+        `${v.date_source ? '('+v.date_source+')' : ''} — ${(v.size/1048576).toFixed(1)}MB</div>`
+      ).join('') || '<div style="padding:2px 4px 2px 14px;">无视频文件</div>';
+    });
+    $('scanstat').textContent = `共 ${sources.length} 个摄像头，总计 ${totalAll} 个视频，今天 ${todayAll} 个`;
+    $('scanresult').innerHTML = html || '<div>无视频文件</div>';
+    $('scanresult').style.display = 'block';
+  } catch (e) {
+    $('scanstat').textContent = '扫描出错: ' + e;
+  }
+}
+
+async function toggleBrowse(field) {
+  const dl = $('dl_' + field);
+  if (dl.style.display === 'block') { dl.style.display='none'; return; }
+  const cur = $(field).value || '/host';
+  const r = await fetch('/api/browse?path=' + encodeURIComponent(cur));
+  const j = await r.json();
+  dl.innerHTML = j.dirs.map(d => `<div onclick="pickDir('${field}','${d}')">${d}</div>`).join('')
+    || '<div>（无子目录）</div>';
+  dl.style.display = 'block';
+}
+function pickDir(field, d) { $(field).value = d; $('dl_'+field).style.display='none'; }
+
+// 配置请求失败也不影响页面渲染：独立启动，失败仅提示
+loadConfig().catch(e => console.warn('loadConfig failed:', e));
+</script>
+</body>
+</html>
